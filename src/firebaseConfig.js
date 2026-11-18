@@ -5,8 +5,9 @@
 //   VITE_FIREBASE_MESSAGING_SENDER_ID, VITE_FIREBASE_APP_ID,
 //   VITE_PERSON_A_EMAIL, VITE_PERSON_B_EMAIL (the two Google accounts allowed in), VITE_DB_ROOT, VITE_MESSAGES_ROOT,
 //   VITE_PUSH_URL (Cloudflare Worker base URL), VITE_VAPID_PUBLIC_KEY (Web Push; both optional: empty = no system push)
-// Defaults are the NEW project's values (trailhead-hellner-tracker; its database starts empty, so the legacy migration just sets its flag) (the web API key is public by design; access is
-// protected by Auth + Realtime Database rules).
+// The API key is NOT committed: it comes only from VITE_FIREBASE_API_KEY (.env.local, gitignored). The other values default
+// to the project trailhead-hellner-tracker (identifiers, not credentials; access is protected by Auth + database rules).
+// Its database starts empty, so the legacy migration just sets its flag.
 const env = (typeof import.meta !== 'undefined' && import.meta.env) || {};
 
 export const firebaseConfig = {

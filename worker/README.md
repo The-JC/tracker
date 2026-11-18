@@ -25,10 +25,19 @@ only a signed-in allowlisted user can write, and only events authored by the cal
 |---|---|---|
 | GET | `/health` | `{"ok":true}` |
 | POST | `/notify` | body `{"eventId":"<push key>"}`, header `Authorization: Bearer <Firebase ID token>`. Responds `{"sent":n,"removed":m}` (or `{"sent":0,"removed":0,"duplicate":true}`) |
+| POST | `/notify` | **test mode**, same auth: body `{"test":"self"\|"other"}` instead of `eventId`. No event is read; sends a fixed test text to the caller's own (`self`) or the other person's (`other`) devices. Responds `{"sent":n,"removed":m,"target":"self"}`, or `{"sent":0,"removed":0,"target":"other","reason":"no-subscription"}` (200) when the recipient has no stored subscription |
 | OPTIONS | any | CORS preflight (204) for origins in `ALLOWED_ORIGINS` |
 
-Errors are JSON `{"error":"..."}`: 400 bad body/eventId/timestamp, 401 bad token, 403 account not allowlisted /
+Errors are JSON `{"error":"..."}`: 400 bad body/eventId/test value/timestamp, 429 test sent less than 10 s ago (with `Retry-After` seconds), 401 bad token, 403 account not allowlisted /
 event not yours / disallowed origin / DB denied, 404 event not found, 410 event older than 5 min, 5xx server.
+
+### Test notifications
+
+`{"test":"self"}` pushes `Trailhead — Test notification — push is working on this device 🎉` to the caller's devices;
+`{"test":"other"}` pushes `<caller name> sent you a test notification` to the other person (name from `nameA`/`nameB` in the
+database, read with the caller's token, falling back to Beatrix/Julian). Tag `trailhead-test`, url `/`. Subscriptions are read,
+encrypted/sent and dead ones (404/410) deleted exactly as for events. Rate limit: one test per 10 s per actor, best-effort and
+per isolate (in-memory Map, like the replay guard). The Settings sheet of the app has the two buttons.
 
 ## Configuration
 
@@ -102,6 +111,6 @@ If you later narrow the rules, `pushSubs/<person>` must stay writable by that pe
 * **iOS/iPadOS** only delivers web push to a web app that was added to the Home Screen (iOS 16.4+) and opened from there once.
 * Best-effort: push services may delay or drop messages (TTL is 1 h, urgency normal); there are no delivery receipts.
 * Anti-replay is best-effort: events older than 5 min are rejected and an `eventId` is processed once **per isolate**
-  (in-memory Map); a different isolate could re-send the same event within its 5 min window. There is no other rate limiting.
+  (in-memory Map); a different isolate could re-send the same event within its 5 min window. Test notifications are limited to one per 10 s per actor, also per isolate; there is no other rate limiting.
 * A recipient who never enabled notifications or has no stored subscription simply gets `sent: 0`.
 * Free tier limits: Workers 100k requests/day, plenty for two users.

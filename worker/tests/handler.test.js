@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createECDH, randomBytes } from 'node:crypto';
-import { handleRequest, normalizeSubs, buildPayload } from '../src/handler.js';
+import { handleRequest, normalizeSubs, buildPayload, buildTestPayload } from '../src/handler.js';
 import { originAllowed } from '../src/cors.js';
 import { ENV, makeIssuer } from './helpers.js';
 
@@ -22,7 +22,7 @@ const sub = () => {
 };
 
 // Fake world: DB contents + push service behaviour; records every call.
-function world({ events = {}, subs = {}, pushStatus = {} } = {}) {
+function world({ events = {}, subs = {}, pushStatus = {}, names = {} } = {}) {
   const calls = [];
   const fetchFn = async (url, init = {}) => {
     const u = new URL(url);
@@ -33,17 +33,18 @@ function world({ events = {}, subs = {}, pushStatus = {} } = {}) {
       if (init.method === 'DELETE') { return new Response('null'); }
       if (path[1] === 'events') return Response.json(events[path[2]] ?? null);
       if (path[1] === 'pushSubs') return Response.json(subs[path[2]] ?? null);
+      if (path[1] === 'nameA' || path[1] === 'nameB') return Response.json(names[path[1]] ?? null);
     }
     return new Response(null, { status: pushStatus[url] || 201 });
   };
   return { fetchFn, calls };
 }
 
-async function call(w, { token = iss.mint(), body = { eventId: 'ev1' }, headers = {}, method = 'POST', path = '/notify', env, seen = new Map(), now = NOW } = {}) {
+async function call(w, { token = iss.mint(), body = { eventId: 'ev1' }, headers = {}, method = 'POST', path = '/notify', env, seen = new Map(), testSeen = new Map(), now = NOW } = {}) {
   const e = { ...ENV, ...(await vapid()), ...env };
   const h = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers };
   const req = new Request('https://w.example.test' + path, { method, headers: h, body: method === 'POST' ? JSON.stringify(body) : undefined });
-  const res = await handleRequest(req, e, { fetchFn: w.fetchFn, now: () => now, getCerts: iss.getCerts, seen });
+  const res = await handleRequest(req, e, { fetchFn: w.fetchFn, now: () => now, getCerts: iss.getCerts, seen, testSeen });
   return { res, json: res.status === 204 ? null : await res.json() };
 }
 
@@ -146,4 +147,81 @@ test('normalizeSubs / buildPayload', () => {
   assert.equal(normalizeSubs(s, 'a')[0].path, 'trailhead-tracker-v1/pushSubs/a');
   assert.deepEqual(normalizeSubs(null, 'a'), []);
   assert.deepEqual(buildPayload({ text: ' hi \n there ' }, 'e9'), { title: 'Trailhead', body: 'hi there', tag: 'e9', url: '/' });
+});
+
+/* ---------- test notifications: {"test":"self"|"other"} ---------- */
+
+const tokenB = () => iss.mint({ email: 'person-b@example.test' });
+const pushes = w => w.calls.filter(c => c.url.host === 'push.example.test');
+
+test('test self: sends to the caller own subscriptions, no event read', async () => {
+  const s = sub();
+  const w = world({ subs: { a: { h1: s }, b: { h2: sub() } } });
+  const { res, json } = await call(w, { body: { test: 'self' } });
+  assert.equal(res.status, 200); assert.deepEqual(json, { sent: 1, removed: 0, target: 'self' });
+  assert.deepEqual(pushes(w).map(c => c.url.href), [s.endpoint]);
+  assert.ok(!w.calls.some(c => c.url.pathname.includes('/events/')), 'no event is read');
+  assert.ok(w.calls.some(c => c.url.pathname === '/trailhead-tracker-v1/pushSubs/a.json'));
+});
+
+test('test other: sends to the other person, using the caller name from the DB (fallback to the map)', async () => {
+  const s = sub();
+  const w = world({ subs: { b: { h1: s }, a: { h2: sub() } }, names: { nameA: 'Bea' } });
+  const { json } = await call(w, { body: { test: 'other' } });
+  assert.deepEqual(json, { sent: 1, removed: 0, target: 'other' });
+  assert.deepEqual(pushes(w).map(c => c.url.href), [s.endpoint]);
+  // b -> a with no names in the DB: default "Julian"
+  const w2 = world({ subs: { a: { h: sub() } } });
+  assert.deepEqual((await call(w2, { token: tokenB(), body: { test: 'other' } })).json, { sent: 1, removed: 0, target: 'other' });
+  assert.ok(w2.calls.some(c => c.url.pathname === '/trailhead-tracker-v1/nameB.json'));
+});
+
+test('buildTestPayload texts, tag and url', () => {
+  assert.deepEqual(buildTestPayload('self'), { title: 'Trailhead', body: 'Test notification \u2014 push is working on this device \u{1F389}', tag: 'trailhead-test', url: '/' });
+  assert.deepEqual(buildTestPayload('other', 'Beatrix'), { title: 'Trailhead', body: 'Beatrix sent you a test notification', tag: 'trailhead-test', url: '/' });
+});
+
+test('test: recipient without subscription -> 200 no-subscription, nothing pushed', async () => {
+  const w = world({ subs: { a: { h: sub() } } });
+  const { res, json } = await call(w, { body: { test: 'other' } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(json, { sent: 0, removed: 0, target: 'other', reason: 'no-subscription' });
+  assert.equal(pushes(w).length, 0);
+});
+
+test('test: dead subscriptions are cleaned up like for events', async () => {
+  const dead = sub(), live = sub();
+  const w = world({ subs: { a: { d: dead, l: live } }, pushStatus: { [dead.endpoint]: 410 } });
+  assert.deepEqual((await call(w, { body: { test: 'self' } })).json, { sent: 1, removed: 1, target: 'self' });
+  assert.deepEqual(w.calls.filter(c => c.method === 'DELETE').map(c => c.url.pathname), ['/trailhead-tracker-v1/pushSubs/a/d.json']);
+});
+
+test('test: rate limit 1 per 10 s per actor, 429 with Retry-After', async () => {
+  const testSeen = new Map();
+  const w = world({ subs: { a: { h: sub() }, b: { h: sub() } } });
+  assert.equal((await call(w, { body: { test: 'self' }, testSeen })).res.status, 200);
+  const r = await call(w, { body: { test: 'other' }, testSeen, now: NOW + 4000 });
+  assert.equal(r.res.status, 429);
+  assert.equal(r.res.headers.get('retry-after'), '6');
+  assert.equal(pushes(w).length, 1, 'the limited request pushes nothing');
+  // the other person has their own budget; the same person may test again after 10 s
+  assert.equal((await call(w, { token: tokenB(), body: { test: 'self' }, testSeen, now: NOW + 4000 })).res.status, 200);
+  assert.equal((await call(w, { body: { test: 'self' }, testSeen, now: NOW + 10000 })).res.status, 200);
+});
+
+test('test: bad value 400, unauthenticated 401, not allowlisted 403, no DB access', async () => {
+  const w = world({ subs: { a: { h: sub() } } });
+  for (const t of ['both', '', 5, null, ['self'], { x: 1 }]) assert.equal((await call(w, { body: { test: t } })).res.status, 400, JSON.stringify(t));
+  assert.equal((await call(w, { token: null, body: { test: 'self' } })).res.status, 401);
+  assert.equal((await call(w, { token: 'x.y.z', body: { test: 'self' } })).res.status, 401);
+  assert.equal((await call(w, { token: iss.mint({ email: 'eve@example.test' }), body: { test: 'self' } })).res.status, 403);
+  assert.equal(w.calls.length, 0);
+});
+
+test('test: CORS headers and origin check apply; eventId flow still validates eventId', async () => {
+  const w = world({ subs: { a: { h: sub() } } });
+  const ok = await call(w, { body: { test: 'self' }, headers: { Origin: 'https://trailhead.pages.dev' } });
+  assert.equal(ok.res.headers.get('access-control-allow-origin'), 'https://trailhead.pages.dev');
+  assert.equal((await call(w, { body: { test: 'self' }, headers: { Origin: 'https://evil.example' } })).res.status, 403);
+  assert.equal((await call(world(), { body: {} })).res.status, 400);
 });

@@ -1,0 +1,14 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "trailhead-tracker-v1": {
+      ".read": "auth != null && auth.token.email_verified == true && (auth.token.email == '__EMAIL_A__' || auth.token.email == '__EMAIL_B__')",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == '__EMAIL_A__' || auth.token.email == '__EMAIL_B__')"
+    },
+    "trailhead-tracker-v1-messages": {
+      ".read": "auth != null && auth.token.email_verified == true && (auth.token.email == '__EMAIL_A__' || auth.token.email == '__EMAIL_B__')",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == '__EMAIL_A__' || auth.token.email == '__EMAIL_B__')"
+    }
+  }
+}

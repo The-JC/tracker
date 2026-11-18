@@ -20,7 +20,7 @@ import {
 } from './push.js';
 import { resolveUser } from './identity.js';
 import { settle } from './utils/settle.js';
-import { prepareEdit, newlyFulfilledWeek, hasWeekEvent } from './utils/entryPatch.js';
+import { prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment } from './utils/entryPatch.js';
 import { normalizeReminder, isValidTime, roundTime, deviceTimeZone, isValidTimeZone, buildReminderPatch } from './utils/reminderTime.js';
 
 const DEFAULT_NAMES = { a: PEOPLE.a.name, b: PEOPLE.b.name };
@@ -367,13 +367,9 @@ export async function addActivity(input) {
   const entry = { id, person: me, ...checked.value, hasPhoto: !!photo, ts: Date.now() };
 
   // Week fulfilment before/after, to detect a week that just became fulfilled.
-  const isFulfilled = (log, e) => {
-    const start = calcStartDate(store.settings.startDate, log, today.value);
-    const n = weekOfEntry(e, start);
-    if (!n || n > PLAN.length) return { n: null, done: false };
-    const w = buildWeeks(PLAN, store.goals, log, start, today.value)[n - 1];
-    return { n, done: w[me].status === 'fulfilled' };
-  };
+  const isFulfilled = (log, e) => weekFulfillment({
+    entry: e, log, person: me, goals: store.goals, settingsStartDate: store.settings.startDate, today: today.value
+  });
   const after = entry.sport === 'run' ? isFulfilled([...store.log, entry], entry) : { n: null, done: false };
   const before = entry.sport === 'run' && after.n ? isFulfilled(store.log, entry) : { done: false };
   // (If the plan start shifts because this is the earliest run, `before` uses the old mapping on purpose.)

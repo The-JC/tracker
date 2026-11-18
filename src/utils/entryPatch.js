@@ -95,6 +95,19 @@ export function prepareEdit(entry, input, { today, now = new Date() } = {}) {
   return { ok: true, patch, next: applyPatch(entry, patch), photo, changed: Object.keys(patch).length > 0 || photo === 'set' };
 }
 
+/* ---------- plan week of an entry ---------- */
+
+// Plan week `entry` falls in, under the plan start implied by `log` (+ the settings start date), and whether that week is
+// fulfilled for `person`. `n` is null (never an out-of-range number) when the entry is outside plan weeks 1..plan.length,
+// e.g. a run dated before an explicit plan start date or after the race.
+export function weekFulfillment({ entry, log, person, goals = {}, settingsStartDate = null, today, plan = DEFAULT_PLAN }) {
+  const start = effectiveStartDate(settingsStartDate, log, today);
+  const n = weekOfEntry(entry, start);
+  if (!n || n < 1 || n > plan.length) return { n: null, done: false };
+  const week = buildWeeks(plan, goals, log, start, today)[n - 1];
+  return { n, done: !!week && week[person].status === 'fulfilled' };
+}
+
 /* ---------- plan week newly fulfilled by an edit ---------- */
 
 // Plan week (number) of `next.person` that is fulfilled with the edit applied but was not before it, else null.
@@ -106,7 +119,7 @@ export function newlyFulfilledWeek({ entry, next, log, goals = {}, settingsStart
   const startAfter = effectiveStartDate(settingsStartDate, afterLog, today);
   const n = weekOfEntry(next, startAfter);
   if (!n || n < 1 || n > plan.length) return null;
-  const done = (l, start) => buildWeeks(plan, goals, l, start, today)[n - 1][person].status === 'fulfilled';
+  const done = (l, start) => { const w = buildWeeks(plan, goals, l, start, today)[n - 1]; return !!w && w[person].status === 'fulfilled'; };
   if (!done(afterLog, startAfter)) return null;
   const startBefore = effectiveStartDate(settingsStartDate, log || [], today);
   return done(log || [], startBefore) ? null : n;

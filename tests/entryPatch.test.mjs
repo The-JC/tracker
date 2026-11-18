@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PLAN } from '../src/plan.js';
 import { buildWeeks } from '../src/scoring.js';
 import {
-  formFromEntry, isAutoTitle, changeSport, applyPatch, prepareEdit, newlyFulfilledWeek, hasWeekEvent, FUTURE_DATE_ERROR
+  formFromEntry, isAutoTitle, changeSport, applyPatch, prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment, FUTURE_DATE_ERROR
 } from '../src/utils/entryPatch.js';
 
 const TODAY = '2026-03-20';
@@ -174,4 +174,43 @@ test('hasWeekEvent matches person and week, not the name', () => {
   assert.equal(hasWeekEvent(events, 'a', 13), false);
   assert.equal(hasWeekEvent(events, 'a', 4), false);
   assert.equal(hasWeekEvent([], 'a', 3), false);
+});
+
+/* ---------- weekFulfillment: out-of-plan dates must never throw (regression: "undefined is not an object (evaluating 'l[n]')") ---------- */
+
+test('weekFulfillment: a run dated before an explicit plan start is outside the plan, not a crash', () => {
+  const entry = run({ id: 'new', date: '2026-02-02', km: 4 });
+  const res = weekFulfillment({ entry, log: [entry], person: 'a', settingsStartDate: '2026-03-02', today: TODAY });
+  assert.deepEqual(res, { n: null, done: false });
+});
+
+test('weekFulfillment: far in the past (week <= 0) and after the race are outside the plan', () => {
+  for (const date of ['2025-01-01', '2026-03-01', '2027-06-01']) {
+    const entry = run({ id: 'x', date });
+    assert.doesNotThrow(() => weekFulfillment({ entry, log: [entry], person: 'a', settingsStartDate: '2026-03-02', today: TODAY }));
+    assert.equal(weekFulfillment({ entry, log: [entry], person: 'a', settingsStartDate: '2026-03-02', today: TODAY }).n, null);
+  }
+});
+
+test('weekFulfillment: a run inside the plan reports its week and fulfilment', () => {
+  const week1 = PLAN[0].runs.a.reduce((s, r) => s + (r.km || 0), 0);
+  const entry = run({ id: 'full', date: '2026-03-04', km: week1 });
+  const res = weekFulfillment({ entry, log: [entry], person: 'a', settingsStartDate: '2026-03-02', today: TODAY });
+  assert.equal(res.n, 1);
+  assert.equal(res.done, true);
+  const small = weekFulfillment({ entry: run({ id: 's', date: '2026-03-04', km: 1 }), log: [run({ id: 's', date: '2026-03-04', km: 1 })], person: 'a', settingsStartDate: '2026-03-02', today: TODAY });
+  assert.deepEqual(small, { n: 1, done: false });
+});
+
+test('weekFulfillment: without an explicit start the earliest run defines week 1 (never negative)', () => {
+  const early = run({ id: 'e', date: '2026-03-02' });
+  const late = run({ id: 'l', date: '2026-03-18' });
+  assert.equal(weekFulfillment({ entry: late, log: [early, late], person: 'a', today: TODAY }).n, 3);
+  assert.equal(weekFulfillment({ entry: early, log: [early, late], person: 'a', today: TODAY }).n, 1);
+});
+
+test('newlyFulfilledWeek: does not throw when the edit moves a run before the plan start', () => {
+  const entry = run({ id: 'm', date: '2026-03-04', km: 20 });
+  const next = { ...entry, date: '2026-01-05' };
+  assert.doesNotThrow(() => newlyFulfilledWeek({ entry, next, log: [entry], settingsStartDate: '2026-03-02', today: TODAY }));
 });

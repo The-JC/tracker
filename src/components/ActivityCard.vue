@@ -1,6 +1,7 @@
 <script setup>
 // ActivityCard: one Strava-style feed card.
-// Props: entry (ActivityEntry, required). Emits: none (calls toggleKudos / deleteActivity / loadPhoto from the store directly).
+// Props: entry (ActivityEntry, required). Emits: 'edit' (own entries: the Edit button; the parent opens the edit sheet).
+// Calls toggleKudos / deleteActivity / loadPhoto from the store directly.
 // The photo is fetched lazily (IntersectionObserver) only when entry.hasPhoto; imported legacy entries render compact.
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { store, today, toggleKudos, deleteActivity, loadPhoto, pushToast } from '../store.js';
@@ -8,6 +9,7 @@ import { pointsFor, paceMinPerKm, formatPace, formatKm, relativeDate } from '../
 import { SPORT_BY_KEY, RUN_TYPE_BY_KEY } from '../plan.js';
 
 const props = defineProps({ entry: { type: Object, required: true } });
+const emit = defineEmits(['edit']);
 
 const e = computed(() => props.entry);
 const person = computed(() => (e.value.person === 'b' ? 'b' : 'a'));
@@ -63,6 +65,13 @@ onMounted(() => {
     if (items.some(i => i.isIntersecting)) { observer.disconnect(); observer = null; fetchPhoto(); }
   }, { rootMargin: '300px 0px' });
   observer.observe(mediaEl.value);
+});
+// An edit may add, replace or remove the photo: reload it (the store keeps its cache current).
+watch(() => [e.value.hasPhoto, e.value.editedTs], ([has]) => {
+  if (!has) { photo.value = null; photoState.value = 'none'; return; }
+  photo.value = null;
+  photoState.value = 'idle';
+  fetchPhoto();
 });
 onBeforeUnmount(() => { if (observer) observer.disconnect(); document.removeEventListener('keydown', onViewerKey); });
 
@@ -128,7 +137,7 @@ function cancelDelete() {
       <span class="avatar" :class="`avatar--${person}`" aria-hidden="true">{{ name.charAt(0).toUpperCase() }}</span>
       <div class="activity-card__who">
         <span class="activity-card__name">{{ name }}</span>
-        <span class="activity-card__time">{{ when }}</span>
+        <span class="activity-card__time">{{ when }}<template v-if="entry.editedTs"> · edited</template></span>
       </div>
       <span class="activity-card__sport" role="img" :aria-label="sport.label">{{ sport.emoji }}</span>
     </header>
@@ -175,7 +184,13 @@ function cancelDelete() {
           <button type="button" class="btn btn--ghost btn--sm" :disabled="deleting" @click="cancelDelete">Cancel</button>
           <button ref="confirmBtn" type="button" class="btn btn--danger btn--sm" :class="{ 'is-loading': deleting }" :disabled="deleting" @click="remove">Delete</button>
         </template>
-        <button v-else ref="deleteBtn" type="button" class="btn btn--danger-ghost btn--sm" @click="confirming = true">Delete</button>
+        <template v-else>
+          <button type="button" class="btn btn--ghost btn--sm" aria-label="Edit activity" @click="emit('edit', entry)">
+            <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z" /><path d="M13.5 6.5l4 4" /></svg>
+            Edit
+          </button>
+          <button ref="deleteBtn" type="button" class="btn btn--danger-ghost btn--sm" @click="confirming = true">Delete</button>
+        </template>
       </div>
     </footer>
 

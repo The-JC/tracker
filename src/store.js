@@ -16,10 +16,11 @@ import {
 import { createBackend, fakeEventFromOther } from './backend.js';
 import { DB_ROOT, MESSAGES_ROOT, PEOPLE, PUSH_URL, VAPID_PUBLIC_KEY } from './firebaseConfig.js';
 import {
-  isPushSupported, currentSubscription, subscribeToPush, unsubscribeFromPush, endpointHash, subscriptionRecord, notifyWorker
+  isPushSupported, currentSubscription, subscribeToPush, unsubscribeFromPush, endpointHash, subscriptionRecord, notifyWorker, sendTestPush, testPushMessage
 } from './push.js';
 import { resolveUser } from './identity.js';
 import { settle } from './utils/settle.js';
+import { prepareEdit, newlyFulfilledWeek, hasWeekEvent } from './utils/entryPatch.js';
 
 const DEFAULT_NAMES = { a: PEOPLE.a.name, b: PEOPLE.b.name };
 const P = {
@@ -63,6 +64,7 @@ export const store = reactive({
   notifPermission: currentPermission(),
   pushActive: false,    // true while this device has a Web Push subscription stored for `me` (Firebase backend only)
   pushBusy: false,      // enabling/disabling/re-syncing in progress
+  testPush: { busy: false, message: '', kind: 'success' }, // result of the Settings "Send test notification" buttons (kind: success | warning | error)
   backend: 'firebase',
   online: typeof navigator !== 'undefined' ? navigator.onLine !== false : true
 });
@@ -109,7 +111,7 @@ function startSync() {
     store.settings.startDate = s.startDate && isValidISODate(s.startDate) ? s.startDate : null;
     if (!s.migratedV1 && !migrationTried) { migrationTried = true; runMigration(); }
   });
-  sub(P.log, v => { store.log = sortLog(asEntries(v)); store.logLoaded = true; store.syncError = ''; });
+  sub(P.log, v => { const next = sortLog(asEntries(v)); dropStalePhotos(store.log, next); store.log = next; store.logLoaded = true; store.syncError = ''; });
   sub(P.events, v => onEvents(asEntries(v)), { limitToLast: 50 });
   sub(P.messages, v => {
     store.notes = Object.entries(v || {})
@@ -342,6 +344,50 @@ export async function addActivity(input) {
   return id;
 }
 
+// Edits `id` (own entries only). `input` has the addActivity shape plus `removePhoto: true`; no photo key keeps the photo.
+// Only changed fields are written (never person, id, ts, kudos, imported), with `editedTs`. No event for a plain edit,
+// except the 'week' event when the edit makes the plan week newly fulfilled.
+export async function updateActivity(id, input) {
+  if (!store.me) throw new Error('You are not signed in.');
+  const entry = store.log.find(e => e.id === id);
+  if (!entry) throw new Error('That activity no longer exists.');
+  if (entry.person !== store.me) throw new Error('You can only edit your own activities.');
+  const prepared = prepareEdit(entry, input, { today: today.value });
+  if (!prepared.ok) throw new Error(prepared.error);
+  if (!prepared.changed) return id;
+  const me = store.me;
+  const editedTs = Date.now();
+  const weekN = newlyFulfilledWeek({
+    entry, next: prepared.next, log: store.log, goals: store.goals, settingsStartDate: store.settings.startDate, today: today.value
+  });
+
+  // Photo first, then the entry (so hasPhoto never points at a missing photo); issued back to back like addActivity.
+  const writes = [];
+  if (prepared.photo === 'set') {
+    writes.push(backend.set(`${P.photos}/${id}`, input.photoDataUrl));
+    photoCache.set(id, input.photoDataUrl);
+    ownPhotoEdits.set(id, editedTs);
+  } else if (prepared.photo === 'remove') {
+    writes.push(backend.remove(`${P.photos}/${id}`));
+    photoCache.delete(id);
+  }
+  writes.push(backend.update(`${P.log}/${id}`, clean({ ...prepared.patch, editedTs })));
+  if (weekN && !hasWeekEvent(store.events, me, weekN)) writes.push(pushEvent('week', weekEventText(store.names[me], weekN), id));
+  await settle(Promise.all(writes));
+  return id;
+}
+
+// A photo replaced on another device must not keep showing the old cached one (our own edits already cached the new one).
+const ownPhotoEdits = new Map();
+function dropStalePhotos(prev, next) {
+  const before = new Map((prev || []).map(e => [e.id, e]));
+  for (const e of next) {
+    const old = before.get(e.id);
+    if (!old || old.editedTs === e.editedTs || ownPhotoEdits.get(e.id) === e.editedTs) continue;
+    photoCache.delete(e.id);
+  }
+}
+
 export async function deleteActivity(id) {
   const entry = store.log.find(e => e.id === id);
   if (!entry || entry.person !== store.me) return;
@@ -492,4 +538,20 @@ export async function disableSystemNotifications() {
     console.warn('Turning off push failed:', e);
     pushToast("Couldn't turn off alerts. Try again.", 'info');
   } finally { store.pushBusy = false; }
+}
+
+// Settings: ask the Worker for a test push to this person's devices ('self') or the other person's ('other').
+// Never throws; the outcome lands in store.testPush for the Settings banner.
+export async function sendTestNotification(target) {
+  if (store.testPush.busy) return;
+  const done = (kind, message) => { store.testPush.kind = kind; store.testPush.message = message; };
+  if (!backend || backend.kind !== 'firebase') { pushToast('Local mode: no real push', 'info'); return; }
+  if (target === 'self' && !store.pushActive) { done('warning', 'Enable alerts on this device first'); return; }
+  store.testPush.busy = true;
+  store.testPush.message = '';
+  try {
+    const r = await sendTestPush(target, { url: PUSH_URL, getToken: () => backend.getIdToken() });
+    const m = testPushMessage(r, target);
+    done(m.kind, m.message);
+  } finally { store.testPush.busy = false; }
 }

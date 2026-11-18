@@ -1,19 +1,22 @@
 <script setup>
-// LogActivitySheet: bottom sheet to log an activity.
-// Props: open (boolean). Emits: 'close' (also after a successful save).
+// LogActivitySheet: bottom sheet to log an activity, or (prop `entry` set) to edit one of your own entries.
+// Props: open (boolean), entry (ActivityEntry|null: edit mode, prefilled, no draft). Emits: 'close' (also after a successful save).
+// Edit mode calls updateActivity(entry.id, {...fields, photoDataUrl? | removePhoto?}) instead of addActivity.
 // Calls addActivity({sport, runType?, title?, date, km?, durationMin?, note?, photoDataUrl?}) which throws an Error with a
 // user-facing message on invalid input. Fields are validated up front with validateActivityInput so errors sit next to
 // the field; whatever addActivity still throws (offline, permissions...) is shown in a banner.
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { store, today, addActivity, effectiveStartDate } from '../store.js';
+import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate } from '../store.js';
 import {
   validateActivityInput, defaultTitle, pointsFor, paceMinPerKm, formatPace, formatKm,
   weekForDate, effectiveStartDate as calcStartDate
 } from '../scoring.js';
 import { SPORTS, RUN_TYPES, SPORT_BY_KEY, PLAN } from '../plan.js';
 import { compressImage } from '../utils/image.js';
+import { prepareEdit, formFromEntry, changeSport } from '../utils/entryPatch.js';
+import { takeLogPrefill } from '../logPrefill.js';
 
-const props = defineProps({ open: { type: Boolean, default: false } });
+const props = defineProps({ open: { type: Boolean, default: false }, entry: { type: Object, default: null } });
 const emit = defineEmits(['close']);
 
 const blank = sport => ({ sport, runType: 'easy', date: today.value, km: '', durationMin: '', title: '', note: '' });
@@ -25,6 +28,13 @@ const submitted = ref(false);   // show field errors only after the first attemp
 const saveError = ref('');
 const busy = ref(false);
 
+// Edit mode: the entry being edited, its current photo (loaded lazily) and whether the user removed it.
+const isEdit = computed(() => !!props.entry);
+const existingPhoto = ref(null);
+const photoLoading = ref(false);
+const photoRemoved = ref(false);
+let editedWasOpen = false;     // an edit session replaced the draft: the next "create" opening starts blank
+
 const panel = ref(null);
 const sport = computed(() => SPORT_BY_KEY[form.value.sport]);
 const hasKm = computed(() => form.value.sport === 'run' || form.value.sport === 'hike');
@@ -33,10 +43,13 @@ const placeholderTitle = computed(() => defaultTitle(form.value.sport));
 
 /* ---------- validation + live preview ---------- */
 
-const checked = computed(() => validateActivityInput(form.value));
+// Same rules for both modes; edit mode validates through prepareEdit (validateActivityInput + future date, undated imports may stay undated).
+const checked = computed(() => (isEdit.value
+  ? prepareEdit(props.entry, form.value, { today: today.value })
+  : validateActivityInput(form.value)));
 const preview = computed(() => {
   if (!checked.value.ok) return { points: null, pace: null }; // incomplete input: show dashes
-  const v = checked.value.value;
+  const v = isEdit.value ? checked.value.next : checked.value.value;
   return { points: pointsFor(v), pace: paceMinPerKm(v) };
 });
 
@@ -59,10 +72,14 @@ const errors = computed(() => {
 
 const weekInfo = computed(() => {
   const iso = form.value.date;
+  // Undated imported entry: it keeps counting for its explicit plan week.
+  if (isEdit.value && !iso && props.entry.week >= 1) return { n: props.entry.week, inPlan: props.entry.week <= PLAN.length };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
-  // A first dated run moves the effective plan start (see effectiveStartDate), so include it in the lookup.
+  // A first dated run moves the effective plan start (see effectiveStartDate), so include it in the lookup
+  // (in edit mode without the entry itself, whose old date no longer counts).
+  const others = isEdit.value ? store.log.filter(e => e.id !== props.entry.id) : store.log;
   const start = form.value.sport === 'run'
-    ? calcStartDate(store.settings.startDate, [...store.log, { sport: 'run', date: iso }], today.value)
+    ? calcStartDate(store.settings.startDate, [...others, { sport: 'run', date: iso }], today.value)
     : effectiveStartDate.value;
   const n = weekForDate(start, iso);
   return { n, inPlan: n >= 1 && n <= PLAN.length };
@@ -87,11 +104,35 @@ function onKeydown(e) {
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
 
+// Edit mode: prefill from the entry (no draft); load its photo for the preview.
+function startEdit() {
+  const entry = props.entry;
+  editedWasOpen = true;
+  form.value = formFromEntry(entry);
+  photo.value = null;
+  photoError.value = '';
+  photoRemoved.value = false;
+  existingPhoto.value = null;
+  photoLoading.value = !!entry.hasPhoto;
+  if (entry.hasPhoto) {
+    loadPhoto(entry.id).then(url => { if (props.entry && props.entry.id === entry.id) existingPhoto.value = url; })
+      .finally(() => { photoLoading.value = false; });
+  }
+}
+
+function setSport(key) {
+  form.value = isEdit.value ? changeSport(form.value, key) : { ...form.value, sport: key };
+}
+
 watch(() => props.open, async o => {
   if (o) {
     returnFocus = document.activeElement;
     submitted.value = false;
     saveError.value = '';
+    if (props.entry) startEdit();
+    else if (editedWasOpen) { editedWasOpen = false; form.value = blank('run'); photo.value = null; photoError.value = ''; }
+    const prefill = takeLogPrefill(); // set by e.g. the Next-up card's "Log this run"
+    if (prefill && !props.entry) { form.value = { ...blank(prefill.sport || 'run'), ...prefill }; photo.value = null; photoError.value = ''; }
     if (form.value.date > today.value) form.value.date = today.value; // stale draft after midnight/timezone change
     lock(true);
     document.addEventListener('keydown', onKeydown);
@@ -128,6 +169,10 @@ async function onPhoto(e) {
   }
 }
 
+const keptPhoto = computed(() => isEdit.value && props.entry.hasPhoto && !photoRemoved.value && !photo.value);
+const shownPhoto = computed(() => photo.value || (keptPhoto.value ? existingPhoto.value : null));
+function removePhoto() { photo.value = null; photoRemoved.value = true; }
+
 /* ---------- save ---------- */
 
 function focusFirstError() {
@@ -148,8 +193,15 @@ async function save() {
   }
   busy.value = true;
   try {
-    await addActivity({ ...form.value, photoDataUrl: photo.value || undefined });
-    form.value = blank(form.value.sport); // keep the last sport
+    if (isEdit.value) {
+      await updateActivity(props.entry.id, {
+        ...form.value, photoDataUrl: photo.value || undefined, removePhoto: photoRemoved.value && !photo.value ? true : undefined
+      });
+      editedWasOpen = true;
+    } else {
+      await addActivity({ ...form.value, photoDataUrl: photo.value || undefined });
+      form.value = blank(form.value.sport); // keep the last sport
+    }
     photo.value = null;
     photoError.value = '';
     submitted.value = false;
@@ -169,7 +221,7 @@ async function save() {
       <div ref="panel" class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="log-sheet-title">
         <div class="sheet__handle"></div>
         <header class="sheet__header">
-          <h2 id="log-sheet-title" class="sheet__title">Log activity</h2>
+          <h2 id="log-sheet-title" class="sheet__title">{{ isEdit ? 'Edit activity' : 'Log activity' }}</h2>
           <button type="button" class="btn btn--ghost btn--icon btn--round" aria-label="Close" @click="close">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
@@ -179,7 +231,7 @@ async function save() {
           <div class="field">
             <span id="log-sport-label" class="field__label">Sport</span>
             <div class="chip-row chip-row--wrap" role="group" aria-labelledby="log-sport-label">
-              <button v-for="s in SPORTS" :key="s.key" type="button" class="chip" :class="{ 'is-active': form.sport === s.key }" :aria-pressed="form.sport === s.key" @click="form.sport = s.key">
+              <button v-for="s in SPORTS" :key="s.key" type="button" class="chip" :class="{ 'is-active': form.sport === s.key }" :aria-pressed="form.sport === s.key" @click="setSport(s.key)">
                 <span aria-hidden="true">{{ s.emoji }}</span> {{ s.label }}
               </button>
             </div>
@@ -201,8 +253,9 @@ async function save() {
 
           <div class="field" :class="{ 'field--error': errors.date }">
             <label class="field__label" for="log-date">Date</label>
-            <input id="log-date" v-model="form.date" class="input" type="date" :max="today" required :aria-invalid="errors.date ? 'true' : null" :aria-describedby="errors.date ? 'log-date-error' : null">
+            <input id="log-date" v-model="form.date" class="input" type="date" :max="today" :required="!(isEdit && !entry.date)" :aria-invalid="errors.date ? 'true' : null" :aria-describedby="errors.date ? 'log-date-error' : null">
             <p v-if="errors.date" id="log-date-error" class="field__error">{{ errors.date }}</p>
+            <p v-else-if="isEdit && !entry.date" class="field__hint">Imported entry without a date. Pick the real date, or leave it empty.</p>
           </div>
 
           <div v-if="hasKm" class="field" :class="{ 'field--error': errors.km }">
@@ -247,14 +300,19 @@ async function save() {
 
           <div class="field" :class="{ 'field--error': photoError }">
             <span class="field__label">Photo (optional)</span>
-            <div v-if="photo" class="upload__preview">
-              <img :src="photo" alt="Selected photo preview">
-              <button type="button" class="upload__remove btn btn--sm btn--secondary" @click="photo = null">Remove</button>
+            <div v-if="shownPhoto" class="upload__preview">
+              <img :src="shownPhoto" alt="Selected photo preview">
+              <button type="button" class="upload__remove btn btn--sm btn--secondary" @click="removePhoto">Remove</button>
             </div>
-            <label v-else class="upload">
+            <div v-else-if="keptPhoto && photoLoading" class="skeleton skeleton--media" role="status" aria-label="Loading photo"></div>
+            <p v-else-if="keptPhoto" class="field__hint">
+              The current photo couldn't be loaded. It stays unless you replace or remove it.
+              <button type="button" class="btn btn--ghost btn--sm" @click="removePhoto">Remove</button>
+            </p>
+            <label v-if="!shownPhoto && !(keptPhoto && photoLoading) || (isEdit && shownPhoto)" class="upload">
               <input class="sr-only" type="file" accept="image/*" :disabled="photoBusy" @change="onPhoto">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
-              {{ photoBusy ? 'Processing photo…' : 'Add a photo' }}
+              {{ photoBusy ? 'Processing photo…' : shownPhoto || keptPhoto ? 'Replace photo' : 'Add a photo' }}
             </label>
             <p v-if="photoError" class="field__error" role="alert">{{ photoError }}</p>
           </div>
@@ -266,7 +324,8 @@ async function save() {
         </form>
 
         <footer class="sheet__footer">
-          <button type="submit" form="log-activity-form" class="btn btn--primary btn--block" :class="{ 'is-loading': busy }" :aria-busy="busy ? 'true' : null" :disabled="busy || photoBusy">Save activity</button>
+          <button v-if="isEdit" type="button" class="btn btn--secondary" :disabled="busy" @click="close">Cancel</button>
+          <button type="submit" form="log-activity-form" class="btn btn--primary btn--block" :class="{ 'is-loading': busy }" :aria-busy="busy ? 'true' : null" :disabled="busy || photoBusy">{{ isEdit ? 'Save changes' : 'Save activity' }}</button>
         </footer>
       </div>
     </div>

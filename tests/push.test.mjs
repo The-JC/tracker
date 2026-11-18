@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  urlBase64ToUint8Array, uint8ToUrlBase64, endpointHash, subscriptionRecord, iosNeedsHomeScreen, notifyWorker
+  urlBase64ToUint8Array, uint8ToUrlBase64, endpointHash, subscriptionRecord, iosNeedsHomeScreen, notifyWorker, sendTestPush, testPushMessage
 } from '../src/push.js';
 import { shouldShowSystemNotification } from '../src/notifications.js';
 
@@ -89,4 +89,47 @@ test('notifyWorker never throws: HTTP errors, network errors, token errors, time
 test('system notification is skipped locally when real push is active', () => {
   assert.equal(shouldShowSystemNotification({ permission: 'granted', hidden: true, pushActive: true }), false);
   assert.equal(shouldShowSystemNotification({ permission: 'granted', hidden: true, pushActive: false }), true);
+});
+
+test('sendTestPush: posts {test} with the bearer token and maps the answers; never throws', async () => {
+  const seen = [];
+  const reply = (status, body) => async (u, init) => { seen.push({ u, init }); return new Response(JSON.stringify(body), { status }); };
+  const base = { getToken: async () => 'TOK', url: 'https://w.example.test/' };
+
+  assert.deepEqual(await sendTestPush('self', { ...base, fetch: reply(200, { sent: 2, removed: 0, target: 'self' }) }), { ok: true, sent: 2, status: 200 });
+  assert.equal(seen[0].u, 'https://w.example.test/notify');
+  assert.equal(seen[0].init.method, 'POST');
+  assert.equal(seen[0].init.headers.Authorization, 'Bearer TOK');
+  assert.equal(seen[0].init.body, '{"test":"self"}');
+
+  assert.deepEqual(await sendTestPush('other', { ...base, fetch: reply(200, { sent: 0, removed: 0, target: 'other', reason: 'no-subscription' }) }),
+    { ok: true, sent: 0, status: 200, reason: 'no-subscription' });
+  assert.equal((await sendTestPush('other', { ...base, fetch: reply(200, { sent: 0, removed: 0 }) })).reason, 'not-delivered');
+  assert.deepEqual(await sendTestPush('self', { ...base, fetch: reply(429, { error: 'x' }) }), { ok: false, sent: 0, status: 429, reason: 'rate-limited' });
+  assert.deepEqual(await sendTestPush('self', { ...base, fetch: reply(403, {}) }), { ok: false, sent: 0, status: 403, reason: 'http' });
+  assert.equal((await sendTestPush('self', { ...base, fetch: async () => { throw new TypeError('offline'); } })).reason, 'network');
+  assert.equal((await sendTestPush('self', { ...base, getToken: async () => { throw new Error('auth'); }, fetch: reply(200, {}) })).reason, 'network');
+});
+
+test('sendTestPush: not configured, bad target and timeout', async () => {
+  const fetch = async () => { throw new Error('must not be called'); };
+  assert.equal((await sendTestPush('self', { fetch, getToken: async () => 't', url: '' })).reason, 'not-configured');
+  assert.equal((await sendTestPush('self', { fetch, getToken: async () => null, url: 'https://w' })).reason, 'not-configured');
+  assert.equal((await sendTestPush('self', { fetch, url: 'https://w' })).reason, 'not-configured');
+  assert.equal((await sendTestPush('both', { fetch, getToken: async () => 't', url: 'https://w' })).reason, 'bad-target');
+  const hang = (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+  const r = await sendTestPush('self', { fetch: hang, getToken: async () => 't', url: 'https://w', timeoutMs: 20 });
+  assert.deepEqual(r, { ok: false, sent: 0, reason: 'network' });
+});
+
+test('testPushMessage: human messages and kinds', () => {
+  assert.deepEqual(testPushMessage({ ok: true, sent: 1 }), { kind: 'success', message: 'Sent to 1 device \u2014 it should arrive within a few seconds' });
+  assert.match(testPushMessage({ ok: true, sent: 2 }).message, /^Sent to 2 devices/);
+  assert.equal(testPushMessage({ ok: true, sent: 0, reason: 'no-subscription' }, 'other').message, 'No device registered yet \u2014 tap Enable alerts on that phone first');
+  assert.equal(testPushMessage({ ok: true, sent: 0, reason: 'no-subscription' }, 'other').kind, 'warning');
+  assert.equal(testPushMessage({ ok: false, reason: 'rate-limited' }).message, 'Too many tests, wait a few seconds');
+  assert.equal(testPushMessage({ ok: false, reason: 'network' }).message, 'Could not reach the notification service');
+  assert.equal(testPushMessage({ ok: false, reason: 'http', status: 403 }).kind, 'error');
+  assert.equal(testPushMessage({ ok: true, sent: 0, reason: 'not-delivered' }).kind, 'warning');
+  assert.equal(testPushMessage(undefined).kind, 'error');
 });

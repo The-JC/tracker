@@ -76,6 +76,51 @@ export async function notifyWorker({
   }
 }
 
+// Asks the Worker to send a test push: target 'self' (this person's devices) or 'other'. Injectable, never throws.
+// -> { ok, sent, reason?, status? }. ok = the Worker answered 2xx. reason: 'no-subscription' | 'not-delivered' (2xx, sent 0)
+// | 'rate-limited' (429) | 'http' (other status) | 'network' (unreachable / timeout) | 'not-configured' | 'bad-target'.
+export async function sendTestPush(target, { fetch: fetchFn = globalThis.fetch, getToken, url, timeoutMs = 8000 } = {}) {
+  const base = String(url || '').trim().replace(/\/+$/, '');
+  if (target !== 'self' && target !== 'other') return { ok: false, sent: 0, reason: 'bad-target' };
+  if (!base || typeof fetchFn !== 'function' || typeof getToken !== 'function') return { ok: false, sent: 0, reason: 'not-configured' };
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const token = await getToken();
+    if (!token) return { ok: false, sent: 0, reason: 'not-configured' };
+    const res = await fetchFn(`${base}/notify`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ test: target }),
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    if (res.status === 429) return { ok: false, sent: 0, status: 429, reason: 'rate-limited' };
+    if (!res.ok) return { ok: false, sent: 0, status: res.status, reason: 'http' };
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* treated as sent 0 below */ }
+    const sent = data && Number.isFinite(data.sent) ? data.sent : 0;
+    if (sent > 0) return { ok: true, sent, status: res.status };
+    return { ok: true, sent: 0, status: res.status, reason: data && data.reason === 'no-subscription' ? 'no-subscription' : 'not-delivered' };
+  } catch (e) {
+    return { ok: false, sent: 0, reason: 'network' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// sendTestPush result -> { kind: 'success'|'warning'|'error', message } for the Settings banner.
+export function testPushMessage(r, target = 'self') {
+  if (r && r.ok && r.sent > 0) return { kind: 'success', message: `Sent to ${r.sent} ${r.sent === 1 ? 'device' : 'devices'} \u2014 it should arrive within a few seconds` };
+  const reason = r && r.reason;
+  if (reason === 'no-subscription') {
+    return { kind: 'warning', message: target === 'self' ? 'No device registered yet \u2014 tap Enable alerts on this device first' : 'No device registered yet \u2014 tap Enable alerts on that phone first' };
+  }
+  if (reason === 'not-delivered') return { kind: 'warning', message: 'The push service did not accept the message. Try again, or turn alerts off and on again on the receiving device' };
+  if (reason === 'rate-limited') return { kind: 'warning', message: 'Too many tests, wait a few seconds' };
+  if (reason === 'http') return { kind: 'error', message: `The notification service answered with an error (HTTP ${r.status})` };
+  return { kind: 'error', message: 'Could not reach the notification service' };
+}
+
 /* ---------- browser side ---------- */
 
 export function isPushSupported() {

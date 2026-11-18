@@ -59,7 +59,8 @@ ActivityEntry = {
   hasPhoto: boolean,
   kudos?: { a?: true, b?: true },
   imported?: true,
-  ts: number                        // creation time (ms)
+  ts: number,                       // creation time (ms)
+  editedTs?: number                 // set by updateActivity on every edit (ms); the card shows an "edited" tag
 }
 EventEntry = { id, actor:'a'|'b', kind:'activity'|'kudos'|'week'|'note', text: string, refId?: string, ts: number }
 ```
@@ -121,6 +122,9 @@ export const unreadCount         // computed → events by the other person newe
 export function signInWithGoogle(localPerson?): Promise<void>;  export function signOut(): Promise<void>   // localPerson 'a'|'b' only used by the ?local=1 backend
 export function setName(p, name), setStartDate(iso|null), setGoal(runId, kmString)
 export function addActivity(input /* {sport,runType?,title?,date,km?,durationMin?,note?,photoDataUrl?} */): Promise<string>  // person = store.me; emits an 'activity' event, and a 'week' event when a week becomes fulfilled
+export function updateActivity(id, patch /* addActivity input shape, plus removePhoto?: true; no photo key keeps the photo */): Promise<string>
+  // own entries only; validates like addActivity (+ no future date); writes only changed fields + editedTs (never person/id/ts/kudos/imported);
+  // writes/removes photos/<id> and keeps hasPhoto in sync; no event for a plain edit, but emits the 'week' event when the edit newly fulfils the week
 export function deleteActivity(id): Promise<void>
 export function toggleKudos(id): Promise<void>    // emits 'kudos' event when giving, to the owner
 export function loadPhoto(id): Promise<string|null>   // cached

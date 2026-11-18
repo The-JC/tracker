@@ -3,11 +3,13 @@
 // Props: open (boolean). Emits: 'close'. Lazy-loaded by App.vue via defineAsyncComponent.
 // Identity is the signed-in Google account (store.me, store.user) and cannot be changed here.
 import { ref, computed } from 'vue';
-import { store, effectiveStartDate, setName, setStartDate, signOut } from '../store.js';
+import { store, effectiveStartDate, setName, setStartDate, signOut, sendTestNotification } from '../store.js';
+import { PUSH_URL } from '../firebaseConfig.js';
 import { formatDateLong } from '../scoring.js';
 import { version } from '../../package.json';
 import { useSheet } from '../utils/useSheet.js';
 import AlertsBanner from './AlertsBanner.vue';
+import { updateAvailable, checkingUpdate, lastCheckResult, checkForUpdate, reloadApp, APP_BUILD } from '../utils/useUpdateCheck.js';
 
 const props = defineProps({ open: { type: Boolean, default: false } });
 const emit = defineEmits(['close']);
@@ -20,6 +22,14 @@ useSheet(() => props.open, panel, close);
 
 const meName = computed(() => (store.me ? store.names[store.me] : ''));
 const hasManualStart = computed(() => !!store.settings.startDate);
+
+// Test notifications: the local demo backend stays enabled (shows "Local mode: no real push"); Firebase needs the Worker URL.
+const otherName = computed(() => store.names[store.me === 'a' ? 'b' : 'a'] || 'the other person');
+const pushConfigured = computed(() => store.backend === 'local' || !!PUSH_URL);
+const testTarget = ref('');
+const testBusy = computed(() => store.testPush.busy);
+const testDisabled = computed(() => !pushConfigured.value || testBusy.value);
+function runTest(target) { testTarget.value = target; sendTestNotification(target); }
 
 async function saveName(p, ev) {
   error.value = '';
@@ -94,8 +104,30 @@ async function logOut() {
           </section>
 
           <section class="stack stack--sm" aria-labelledby="settings-alerts">
-            <h3 id="settings-alerts" class="text-eyebrow">Alerts</h3>
+            <h3 id="settings-alerts" class="text-eyebrow">Notifications</h3>
             <AlertsBanner show-granted />
+            <p class="text-sm text-muted">Check that push works end to end. After tapping, close the app or lock the phone: the test arrives as a system notification.</p>
+            <div class="grid grid--stack-mobile">
+              <button type="button" class="btn btn--secondary" :class="{ 'is-loading': testBusy && testTarget === 'self' }" :disabled="testDisabled" @click="runTest('self')">Send test to this device</button>
+              <button type="button" class="btn btn--secondary" :class="{ 'is-loading': testBusy && testTarget === 'other' }" :disabled="testDisabled" @click="runTest('other')">Send test to {{ otherName }}</button>
+            </div>
+            <p v-if="!pushConfigured" class="text-sm text-muted">Push is not configured in this build (VITE_PUSH_URL is empty).</p>
+            <div v-if="store.testPush.message" class="banner" :class="`banner--${store.testPush.kind === 'error' ? 'danger' : store.testPush.kind}`" role="status">
+              <span class="banner__icon"><svg class="icon" aria-hidden="true"><use :href="store.testPush.kind === 'success' ? '#i-check' : '#i-alert'" /></svg></span>
+              <div class="banner__body"><div class="banner__text">{{ store.testPush.message }}</div></div>
+            </div>
+          </section>
+
+          <section class="stack stack--sm" aria-labelledby="settings-updates">
+            <h3 id="settings-updates" class="text-eyebrow">App updates</h3>
+            <p class="text-sm text-muted" role="status">
+              <template v-if="updateAvailable">A new version is available.</template>
+              <template v-else-if="lastCheckResult === 'current'">You are on the latest version.</template>
+              <template v-else-if="lastCheckResult === 'failed'">Couldn't check right now. Are you online?</template>
+              <template v-else>The app checks for new versions automatically.</template>
+            </p>
+            <button v-if="updateAvailable" type="button" class="btn btn--primary" @click="reloadApp">Reload now</button>
+            <button v-else type="button" class="btn btn--secondary" :class="{ 'is-loading': checkingUpdate }" :disabled="checkingUpdate || APP_BUILD === 'dev'" @click="checkForUpdate({ force: true })">Check for updates</button>
           </section>
 
           <hr class="divider">

@@ -1,0 +1,86 @@
+/* Trailhead — "Next up" card (NextRunCard.vue). Design tokens only; the card, tag, chip, progress, disclosure and button
+   components come from the design system. This file only arranges the card's own parts. */
+
+.next-run__sk-eyebrow { width: 30%; }
+
+.next-run__headline { display: flex; align-items: center; gap: var(--space-4); }
+.next-run__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+.next-run__icon .icon { width: var(--icon-md); height: var(--icon-md); }
+.next-run__headline--rest .next-run__icon,
+.next-run__headline--done .next-run__icon,
+.next-run__headline--ahead .next-run__icon,
+.next-run__headline--not-started .next-run__icon { background: var(--color-accent-soft); color: var(--color-accent); }
+
+.next-run__title-block { min-width: 0; }
+.next-run__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-tight);
+  color: var(--color-text-strong);
+}
+.next-run__km { font-size: var(--text-2xl); color: var(--color-accent); }
+.next-run__unit { font-size: var(--text-md); font-weight: var(--weight-medium); color: var(--color-text-muted); }
+.next-run__sub { margin: var(--space-1) 0 0; font-size: var(--text-sm); color: var(--color-text-muted); }
+
+.next-run__reason { margin: 0; font-size: var(--text-md); line-height: var(--leading-normal); color: var(--color-text); }
+
+.next-run__week { padding-top: var(--space-1); }
+.next-run__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.next-run__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-inset);
+  font-size: var(--text-sm);
+}
+.next-run__step-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: var(--border-width-strong) solid var(--color-border-strong);
+  border-radius: var(--radius-full);
+}
+.next-run__step.is-done { color: var(--color-text-muted); }
+.next-run__step.is-done .next-run__step-mark { border-color: var(--color-success); background: var(--color-success-solid); color: var(--color-on-solid); }
+.next-run__step.is-done .next-run__step-mark .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.next-run__step.is-next { border-color: var(--color-accent); }
+.next-run__step.is-next .next-run__step-mark { border-color: var(--color-accent); }
+.next-run__step-text { display: flex; flex-direction: column; min-width: 0; line-height: var(--leading-snug); }
+.next-run__step-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-strong); font-weight: var(--weight-semibold); }
+.next-run__step.is-done .next-run__step-type { font-weight: var(--weight-medium); color: var(--color-text-muted); }
+.next-run__step-km { font-size: var(--text-xs); color: var(--color-text-muted); }
+
+.next-run__alts { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.next-run__alt { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); }
+.next-run__alt-chip { flex: none; }
+.next-run__alt-why { flex: 1 1 10rem; min-width: 0; }
+
+.next-run__rules { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding-left: var(--space-4); font-size: var(--text-sm); color: var(--color-text-muted); }

@@ -1,14 +1,19 @@
 <script setup>
 // FeedView: activity cards newest first, 20 at a time ("Show more"), empty state, skeleton until the first log snapshot.
+// Also owns the edit sheet (LogActivitySheet in edit mode) opened by a card's Edit button.
 // Props: none. Emits: 'log' (header button / empty-state CTA wants the log sheet opened). Reads store.log (already sorted newest first).
 import { ref, computed, watch } from 'vue';
 import { store, today } from '../store.js';
 import { mondayOf } from '../scoring.js';
 import ActivityCard from './ActivityCard.vue';
+import LogActivitySheet from './LogActivitySheet.vue';
 
 const emit = defineEmits(['log']);
 const PAGE = 20;
 const shown = ref(PAGE);
+const editEntry = ref(null);   // kept after closing so the sheet does not flip to "Log activity" while it animates out
+const editOpen = ref(false);
+function edit(entry) { editEntry.value = entry; editOpen.value = true; }
 
 const visible = computed(() => store.log.slice(0, shown.value));
 const remaining = computed(() => Math.max(0, store.log.length - shown.value));
@@ -57,9 +62,11 @@ watch(() => store.me, () => { shown.value = PAGE; });
       <h3 v-if="thisWeekCount" class="text-eyebrow text-faint">This week</h3>
       <template v-for="(e, i) in visible" :key="e.id">
         <h3 v-if="thisWeekCount && i === thisWeekCount" class="text-eyebrow text-faint feed-view__earlier">Earlier</h3>
-        <ActivityCard :entry="e" />
+        <ActivityCard :entry="e" @edit="edit" />
       </template>
       <button v-if="remaining" type="button" class="btn btn--secondary btn--block" @click="shown += PAGE">Show more ({{ remaining }})</button>
     </template>
+
+    <LogActivitySheet :open="editOpen" :entry="editEntry" @close="editOpen = false" />
   </section>
 </template>

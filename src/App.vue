@@ -9,8 +9,10 @@ import AuthGate from './components/AuthGate.vue';
 import ToastHost from './components/ToastHost.vue';
 import NotificationBell from './components/NotificationBell.vue';
 import Scoreboard from './components/Scoreboard.vue';
+import NextRunCard from './components/NextRunCard.vue';
 import FeedView from './components/FeedView.vue';
 import LogActivitySheet from './components/LogActivitySheet.vue';
+import UpdateBanner from './components/UpdateBanner.vue';
 
 const PlanView = defineAsyncComponent(() => import('./components/PlanView.vue'));
 const StatsView = defineAsyncComponent(() => import('./components/StatsView.vue'));
@@ -101,6 +103,7 @@ watch([tab, () => store.notes.length], () => { if (tab.value === 'notes') markNo
     </header>
 
     <main class="container app-main stack stack--lg">
+      <UpdateBanner />
       <div v-if="store.backend === 'firebase' && (!store.online || store.syncError)" class="banner banner--warning" role="status">
         <span class="banner__icon"><svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg></span>
         <div class="banner__body">
@@ -108,6 +111,7 @@ watch([tab, () => store.notes.length], () => { if (tab.value === 'notes') markNo
           <div class="banner__text">{{ store.online ? store.syncError : 'Changes are kept on this device and sent as soon as you are back online.' }}</div>
         </div>
       </div>
+      <NextRunCard v-if="tab === 'feed'" @log="logOpen = true" />
       <Scoreboard v-if="tab === 'feed'" />
       <KeepAlive>
         <component :is="view" @log="logOpen = true" />

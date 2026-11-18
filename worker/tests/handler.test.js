@@ -22,7 +22,7 @@ const sub = () => {
 };
 
 // Fake world: DB contents + push service behaviour; records every call.
-function world({ events = {}, subs = {}, pushStatus = {}, names = {} } = {}) {
+function world({ events = {}, subs = {}, pushStatus = {}, names = {}, db = {} } = {}) {
   const calls = [];
   const fetchFn = async (url, init = {}) => {
     const u = new URL(url);
@@ -34,6 +34,7 @@ function world({ events = {}, subs = {}, pushStatus = {}, names = {} } = {}) {
       if (path[1] === 'events') return Response.json(events[path[2]] ?? null);
       if (path[1] === 'pushSubs') return Response.json(subs[path[2]] ?? null);
       if (path[1] === 'nameA' || path[1] === 'nameB') return Response.json(names[path[1]] ?? null);
+      if (['log', 'goals', 'settings'].includes(path[1])) return Response.json(db[path[1]] ?? null);
     }
     return new Response(null, { status: pushStatus[url] || 201 });
   };
@@ -123,7 +124,7 @@ test('CORS: preflight, allowed/denied origins, health', async () => {
   assert.match(ok.res.headers.get('access-control-allow-headers'), /Authorization/);
   assert.equal((await call(w, { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } })).res.status, 403);
   const h = await call(w, { method: 'GET', path: '/health', headers: { Origin: 'http://localhost:5173' } });
-  assert.deepEqual(h.json, { ok: true });
+  assert.deepEqual(h.json, { ok: true, scheduler: false });
   assert.equal((await call(w, { method: 'GET', path: '/nope' })).res.status, 404);
   assert.equal((await call(w, { method: 'GET', path: '/notify' })).res.status, 405);
 });
@@ -224,4 +225,83 @@ test('test: CORS headers and origin check apply; eventId flow still validates ev
   assert.equal(ok.res.headers.get('access-control-allow-origin'), 'https://trailhead.pages.dev');
   assert.equal((await call(w, { body: { test: 'self' }, headers: { Origin: 'https://evil.example' } })).res.status, 403);
   assert.equal((await call(world(), { body: {} })).res.status, 400);
+});
+
+/* ---------- /health scheduler flag and {"test":"reminder"} ---------- */
+
+const T0 = Date.parse('2026-03-03T10:00:00Z'); // a Tuesday of plan week 1 (start 2026-03-02)
+const tokenAt = (ms, claims = {}) => iss.mint(claims, { nowS: Math.floor(ms / 1000) });
+const SA = JSON.stringify({ client_email: 'sa@p.iam.gserviceaccount.com', private_key: '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n' });
+
+test('/health reports scheduler true only when the service account secret parses; nothing sensitive', async () => {
+  const w = world();
+  assert.deepEqual((await call(w, { method: 'GET', path: '/health' })).json, { ok: true, scheduler: false });
+  assert.deepEqual((await call(w, { method: 'GET', path: '/health', env: { FIREBASE_SERVICE_ACCOUNT: SA } })).json, { ok: true, scheduler: true });
+  assert.deepEqual((await call(w, { method: 'GET', path: '/health', env: { FIREBASE_SERVICE_ACCOUNT: '{not json' } })).json, { ok: true, scheduler: false });
+  assert.deepEqual((await call(w, { method: 'GET', path: '/health', env: { FIREBASE_SERVICE_ACCOUNT: '{}' } })).json, { ok: true, scheduler: false });
+});
+
+test('test reminder: builds the caller own recommendation with the caller token and pushes it to the caller only', async () => {
+  const s = sub();
+  const w = world({ subs: { a: { h1: s }, b: { h2: sub() } }, db: { settings: { startDate: '2026-03-02' } } });
+  const { res, json } = await call(w, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(json, { sent: 1, removed: 0, target: 'self', kind: 'run' });
+  assert.deepEqual(pushes(w).map(c => c.url.href), [s.endpoint]);
+  const dbPaths = w.calls.filter(c => c.url.host === 'db.example.test').map(c => c.url.pathname);
+  for (const p of ['log', 'goals', 'settings', 'nameA']) assert.ok(dbPaths.includes(`/trailhead-tracker-v1/${p}.json`), p);
+  assert.ok(!dbPaths.some(p => p.includes('/events/') || p.includes('/pushSubs/b')), 'nothing about the other person');
+});
+
+test('test reminder: non-run kind is still sent (Test: prefix is in the message) and reports the kind', async () => {
+  const w = world({ subs: { a: { h1: sub() } }, db: { settings: { startDate: '2026-03-09' } } });
+  const { json } = await call(w, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+  assert.deepEqual(json, { sent: 1, removed: 0, target: 'self', kind: 'not-started', rest: true });
+});
+
+test('test reminder: rest:true for every non-run kind (and only then); reason only for a missing subscription', async () => {
+  const ran = { x: { person: 'a', sport: 'run', runType: 'easy', km: 5, date: '2026-03-03', ts: 1 } };
+  const cases = [
+    [{ settings: { startDate: '2026-03-02' }, log: ran }, 'rest'],            // ran today
+    [{ settings: { startDate: '2026-03-09' } }, 'not-started'],
+    [{ settings: { startDate: '2025-01-01' } }, 'done']                       // long after the plan
+  ];
+  for (const [db, kind] of cases) {
+    const w = world({ subs: { a: { h: sub() } }, db });
+    const { json } = await call(w, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+    assert.deepEqual(json, { sent: 1, removed: 0, target: 'self', kind, rest: true }, kind);
+    assert.ok(!('reason' in json));
+  }
+  const none = await call(world({ db: { settings: { startDate: '2026-03-09' } } }), { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+  assert.deepEqual(none.json, { sent: 0, removed: 0, target: 'self', kind: 'not-started', rest: true, reason: 'no-subscription' });
+  const run = await call(world({ subs: { a: { h: sub() } }, db: { settings: { startDate: '2026-03-02' } } }), { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+  assert.ok(!('rest' in run.json), 'a run recommendation carries no rest flag');
+});
+
+test('test reminder: uses the tz stored in settings/reminders for "today"', async () => {
+  // 2026-03-02 23:30Z is already Tuesday 03 March in Auckland (week 1 Tuesday: run) but Monday in Zurich/UTC
+  const at = Date.parse('2026-03-02T23:30:00Z');
+  const settings = { startDate: '2026-03-02', reminders: { a: { enabled: true, time: '07:00', tz: 'Pacific/Auckland' } } };
+  const w = world({ subs: { a: { h: sub() } }, db: { settings } });
+  const { json } = await call(w, { token: tokenAt(at), now: at, body: { test: 'reminder' } });
+  assert.equal(json.kind, 'run');
+});
+
+test('test reminder: no subscription -> 200 with reason, kind still reported; dead subs cleaned up', async () => {
+  const w = world({ db: { settings: { startDate: '2026-03-02' } } });
+  assert.deepEqual((await call(w, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } })).json,
+    { sent: 0, removed: 0, target: 'self', kind: 'run', reason: 'no-subscription' });
+  const dead = sub();
+  const w2 = world({ subs: { a: { d: dead } }, pushStatus: { [dead.endpoint]: 410 }, db: { settings: { startDate: '2026-03-02' } } });
+  assert.deepEqual((await call(w2, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } })).json, { sent: 0, removed: 1, target: 'self', kind: 'run' });
+});
+
+test('test reminder: shares the 10 s rate limit with the other test modes; auth is required', async () => {
+  const testSeen = new Map();
+  const w = world({ subs: { a: { h: sub() } }, db: { settings: { startDate: '2026-03-02' } } });
+  assert.equal((await call(w, { token: tokenAt(T0), now: T0, body: { test: 'self' }, testSeen })).res.status, 200);
+  const r = await call(w, { token: tokenAt(T0 + 3000), now: T0 + 3000, body: { test: 'reminder' }, testSeen });
+  assert.equal(r.res.status, 429);
+  assert.equal((await call(w, { token: null, body: { test: 'reminder' } })).res.status, 401);
+  assert.equal((await call(w, { token: iss.mint({ email: 'eve@example.test' }), body: { test: 'reminder' } })).res.status, 403);
 });

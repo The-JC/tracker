@@ -1,4 +1,4 @@
-import { generateKeyPairSync, createSign } from 'node:crypto';
+import { generateKeyPairSync, createSign, createECDH, randomBytes } from 'node:crypto';
 
 export const PROJECT = 'trailhead-hellner-tracker';
 export const ENV = {
@@ -51,4 +51,20 @@ export function makeIssuer(kid = 'kid1') {
       return `${h}.${p}.${b64u(sig)}`;
     }
   };
+}
+
+// Fresh VAPID key pair in the env format of the Worker.
+export async function vapid() {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  return {
+    VAPID_PRIVATE_KEY: jwk.d,
+    VAPID_PUBLIC_KEY: Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]).toString('base64url')
+  };
+}
+
+// A browser push subscription as stored in pushSubs/<person>/<hash>.
+export function makeSub(host = 'push.example.test') {
+  const e = createECDH('prime256v1'); e.generateKeys();
+  return { endpoint: `https://${host}/` + randomBytes(4).toString('hex'), keys: { p256dh: e.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') }, ts: 1 };
 }

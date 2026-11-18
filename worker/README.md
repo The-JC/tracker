@@ -23,9 +23,10 @@ only a signed-in allowlisted user can write, and only events authored by the cal
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/health` | `{"ok":true}` |
+| GET | `/health` | `{"ok":true,"scheduler":bool}`; `scheduler` is true when the `FIREBASE_SERVICE_ACCOUNT` secret parses (nothing sensitive) |
 | POST | `/notify` | body `{"eventId":"<push key>"}`, header `Authorization: Bearer <Firebase ID token>`. Responds `{"sent":n,"removed":m}` (or `{"sent":0,"removed":0,"duplicate":true}`) |
 | POST | `/notify` | **test mode**, same auth: body `{"test":"self"\|"other"}` instead of `eventId`. No event is read; sends a fixed test text to the caller's own (`self`) or the other person's (`other`) devices. Responds `{"sent":n,"removed":m,"target":"self"}`, or `{"sent":0,"removed":0,"target":"other","reason":"no-subscription"}` (200) when the recipient has no stored subscription |
+| POST | `/notify` | **reminder test**, same auth and the same 10 s rate limit: body `{"test":"reminder"}`. Builds the caller's own recommendation (the in-app "Next up" logic, `src/recommendForPerson.js`, database read with the caller's ID token, `today` in the tz from `settings/reminders/<me>`, else Europe/Zurich) and pushes it to the caller's own devices now. Responds `{"sent":n,"removed":m,"target":"self","kind":"run"|"rest"|"done"|"ahead"|"not-started"}`; for every non-`run` kind it also has `"rest":true` (the message is then titled `Test: ...`); `"reason":"no-subscription"` (200, nothing sent) only when the caller has no stored subscription |
 | OPTIONS | any | CORS preflight (204) for origins in `ALLOWED_ORIGINS` |
 
 Errors are JSON `{"error":"..."}`: 400 bad body/eventId/test value/timestamp, 429 test sent less than 10 s ago (with `Retry-After` seconds), 401 bad token, 403 account not allowlisted /
@@ -50,9 +51,47 @@ per isolate (in-memory Map, like the replay guard). The Settings sheet of the ap
 | `VAPID_PUBLIC_KEY` | var | base64url uncompressed P-256 point (public by design) |
 | `VAPID_SUBJECT` | **secret** | `mailto:...` contact for the push services |
 | `VAPID_PRIVATE_KEY` | **secret** | base64url raw private scalar `d` (`wrangler secret put`) |
+| `FIREBASE_SERVICE_ACCOUNT` | **secret** | contents of a Google service account JSON key file; only needed for the daily reminders (see below) |
 
 For production tighten `ALLOWED_ORIGINS` to your exact Pages domain: `https://*.pages.dev` also admits other
 people's Pages sites as browser origins (they still cannot get past the token check, so this is defence in depth).
+
+## Daily run reminders (Cron Trigger)
+
+`wrangler.toml` has `[triggers] crons = ["*/5 * * * *"]` (cron triggers are free). Every 5 minutes `scheduled()` reads
+`settings` and, for each person `a`/`b` with `settings/reminders/<p> = { enabled, time: 'HH:MM', tz, lastSentDate, updatedTs }`:
+
+1. Local date and time are taken in the person's `tz` with `Intl.DateTimeFormat` (DST safe; an invalid tz falls back to `Europe/Zurich`).
+2. Due when `enabled`, local time >= `time`, less than 3 hours (`WINDOW_MINUTES`) after it, and `lastSentDate` is not the local today.
+   A time inside a DST gap (e.g. 02:30 on 2026-03-29 in Zurich) fires at the first tick after the gap; a repeated hour fires once.
+   The window ends at local midnight (a 23:30 reminder is only sent until 23:59).
+3. No stored subscription: skipped silently, the day is not claimed (subscribing later in the window still works).
+4. The recommendation is `recommendForPerson` (log, goals, `settings/startDate`, today), identical to the app's Next-up card. If its kind is not
+   `run`, or the person already logged any activity dated today, nothing is sent but the day is still claimed.
+5. Otherwise `lastSentDate = today` is written **before** sending (at-most-once: a failed push is never retried, a missed day is better than a duplicate),
+   then `Today: <run>` with the recommendation's reason (<= 140 chars) is pushed (tag `trailhead-reminder`, url `/#/feed`). Dead subscriptions are deleted.
+
+The claim is a read-then-PATCH, not a transaction; two overlapping invocations in the same 5-minute slot could in theory both send.
+`scheduled()` never throws; it logs concise lines (`reminder a: sent=1 removed=0`) visible in `wrangler tail`.
+
+The cron has no signed-in user and so no Firebase ID token. It authenticates as a **Google service account** (OAuth2 JWT-bearer flow with WebCrypto,
+RS256, scope `firebase.database` + `userinfo.email`; the access token is cached in isolate memory until ~60 s before expiry and sent as `Authorization: Bearer`).
+Without the secret the cron logs `reminders disabled: no service account` once and does nothing; `GET /health` shows `"scheduler": false`.
+
+Create the key: Firebase console -> Project settings -> Service accounts -> **Generate new private key** (downloads a JSON file). Then:
+
+```sh
+cd worker
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT --config wrangler.toml --name trailhead-push < key.json
+rm key.json            # delete the downloaded file (also from Downloads / the trash)
+npx wrangler deploy --config wrangler.toml
+curl https://trailhead-push.<account>.workers.dev/health   # {"ok":true,"scheduler":true}
+```
+
+Honest note: **a service account key bypasses the database security rules** (full admin access to the project). It must only ever live in the Worker
+secret: never commit it, paste it into chat, or keep the JSON file around. If it leaks, delete the key in the Google Cloud console (IAM -> Service accounts -> Keys) and create a new one.
+Real cron firing and the real Google OAuth exchange are covered by unit tests with fakes only; verify them once after deploying with the
+"send test reminder" button (`{"test":"reminder"}`) and `npx wrangler tail --config wrangler.toml`.
 
 ## Deploy
 
@@ -99,7 +138,7 @@ If you later narrow the rules, `pushSubs/<person>` must stay writable by that pe
 
 ## Implementation notes
 
-* **Own WebCrypto code, no runtime dependencies** (`src/webpush.js`, `src/firebaseToken.js`, `src/x509.js`).
+* **Own WebCrypto code, no runtime dependencies** (`src/webpush.js`, `src/firebaseToken.js`, `src/x509.js`, `src/serviceAccount.js`). The Worker bundle also imports the app's pure modules `../src/recommendForPerson.js`, `recommend.js`, `scoring.js`, `plan.js` so the reminder and the Next-up card share one pipeline.
   The crypto is ~60 lines, avoids supply-chain and Workers-compat issues, and is checked against an independent
   `node:crypto` receiver plus the RFC 8291 appendix A test vector. The x509 parser was also checked against Google's live certs.
 * ID token: RS256 signature against Google's securetoken x509 certs (cached per `max-age`, forced refresh at most once a minute on

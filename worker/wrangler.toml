@@ -10,8 +10,13 @@ ALLOWED_ORIGINS = "https://trailhead-tracker.trailhead-push.workers.dev,http://l
 # Output of `node scripts/gen-vapid.mjs` (public half only; it is not secret).
 VAPID_PUBLIC_KEY = "BLOFMs9atmsJhzyABEgztqkOq9xqv5FlOeuaN_3MzLbUx7IhOQigjIlKP7_O2Sl0UqTpxMNenj3ogwHgFeujLhk"
 
+[triggers]
+# Daily run reminders: wakes the Worker every 5 minutes (free plan allows cron triggers).
+crons = ["*/5 * * * *"]
+
 # Secrets (never put them in this file; set with `npx wrangler secret put <NAME>`):
 #   VAPID_PRIVATE_KEY   output of scripts/gen-vapid.mjs
 #   PERSON_A_EMAIL      lowercase Google email of person a
 #   PERSON_B_EMAIL      lowercase Google email of person b
 #   VAPID_SUBJECT       mailto:<contact email> (identifies the sender to push services)
+#   FIREBASE_SERVICE_ACCOUNT   the service account JSON key file contents (daily reminders only; bypasses database rules)

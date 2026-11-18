@@ -1,18 +1,16 @@
 // Request handling with injected dependencies (fetch, now, getCerts, seen) so it is testable without network.
 import { AuthError, verifyFirebaseIdToken } from './firebaseToken.js';
 import { corsHeaders, originAllowed } from './cors.js';
-import { importVapidPrivateKey, sendWebPush } from './webpush.js';
+import { DB_ROOT, HttpError, dbGet, deliver, loadSubs, loadVapidKey, normalizeSubs, sendToSubs } from './shared.js';
+import { parseServiceAccount } from './serviceAccount.js';
+import { localParts, recommendationFromDb } from './reminders.js';
+import { reminderMessage } from '../../src/recommendForPerson.js';
 
-export const DB_ROOT = 'trailhead-tracker-v1';
+export { DB_ROOT, HttpError, normalizeSubs };
 export const MAX_EVENT_AGE_MS = 5 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 2 * 60 * 1000;
-const MAX_SUBS = 10;
 const TEST_INTERVAL_MS = 10 * 1000;
 const EVENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
-
-export class HttpError extends Error {
-  constructor(status, message, headers = {}) { super(message); this.status = status; this.headers = headers; }
-}
 
 const json = (obj, status, extra = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extra } });
@@ -28,54 +26,9 @@ function claim(seen, id, now) {
   return true;
 }
 
-const dbUrl = (env, path, token) =>
-  `${String(env.DB_URL).replace(/\/+$/, '')}/${path}.json?auth=${encodeURIComponent(token)}`;
-
-async function dbGet(fetchFn, env, path, token) {
-  const res = await fetchFn(dbUrl(env, path, token), { headers: { Accept: 'application/json' } });
-  if (res.status === 401 || res.status === 403) throw new HttpError(403, 'database denied access');
-  if (!res.ok) throw new HttpError(502, `database error ${res.status}`);
-  return res.json();
-}
-
-// { [hash]: {endpoint, keys, ts} } or the legacy single object -> [{ path, endpoint, keys }]
-export function normalizeSubs(raw, recipient) {
-  if (!raw || typeof raw !== 'object') return [];
-  const valid = s => s && typeof s === 'object' && typeof s.endpoint === 'string' && s.keys &&
-    typeof s.keys.p256dh === 'string' && typeof s.keys.auth === 'string' && s.endpoint.startsWith('https://');
-  if (valid(raw)) return [{ path: `${DB_ROOT}/pushSubs/${recipient}`, endpoint: raw.endpoint, keys: raw.keys }];
-  return Object.keys(raw).filter(k => /^[A-Za-z0-9_-]{1,128}$/.test(k) && valid(raw[k])).slice(0, MAX_SUBS)
-    .map(k => ({ path: `${DB_ROOT}/pushSubs/${recipient}/${k}`, endpoint: raw[k].endpoint, keys: raw[k].keys }));
-}
-
 export function buildPayload(event, eventId) {
   const text = String(event.text || '').replace(/\s+/g, ' ').trim();
   return { title: 'Trailhead', body: text.length > 200 ? text.slice(0, 199) + '…' : text, tag: eventId, url: '/' };
-}
-
-// Reads the recipient's subscriptions and sends `payload` to each; dead ones (404/410) are deleted.
-// -> { noSubs } | { sent, removed, transient } (transient: at least one failure that is worth retrying)
-async function deliver({ fetchFn, env, now, idToken, recipient, payload }) {
-  const subs = normalizeSubs(await dbGet(fetchFn, env, `${DB_ROOT}/pushSubs/${recipient}`, idToken), recipient);
-  if (!subs.length) return { noSubs: true };
-
-  let privateKey;
-  try { privateKey = await importVapidPrivateKey(env.VAPID_PRIVATE_KEY, env.VAPID_PUBLIC_KEY); }
-  catch { throw new HttpError(500, 'push is not configured on the server'); }
-  const body = JSON.stringify(payload);
-
-  const results = await Promise.all(subs.map(async s => {
-    try {
-      const r = await sendWebPush({ endpoint: s.endpoint, keys: s.keys }, body,
-        { fetchFn, subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey, now });
-      if (r.gone) {
-        try { await fetchFn(dbUrl(env, s.path, idToken), { method: 'DELETE' }); } catch { /* best effort */ }
-      }
-      return r;
-    } catch { return { ok: false, gone: false }; }
-  }));
-  const sent = results.filter(r => r.ok).length;
-  return { sent, removed: results.filter(r => r.gone).length, transient: sent === 0 && results.some(r => !r.gone) };
 }
 
 // Best-effort per-isolate limiter for test pushes: actor -> last test ms. Returns seconds to wait, or 0 if allowed (and records).
@@ -106,14 +59,31 @@ export function buildTestPayload(target, callerDisplayName) {
   return { title: 'Trailhead', body, tag: 'trailhead-test', url: '/' };
 }
 
+// {"test":"reminder"}: the caller's OWN recommendation, built with the caller's token, pushed to the caller's own devices now.
+async function notifyReminderTest(who, idToken, env, deps) {
+  const { fetchFn, now } = deps;
+  const settings = await dbGet(fetchFn, env, `${DB_ROOT}/settings`, idToken);
+  const cfg = settings && settings.reminders && settings.reminders[who.person];
+  const todayISO = localParts(now(), cfg && cfg.tz).date;
+  const { rec, name } = await recommendationFromDb({ fetchFn, env, auth: idToken, person: who.person, todayISO, settings: settings || {} });
+  const kind = rec.kind;
+  const rest = kind === 'run' ? {} : { rest: true }; // no run today: the test message says so (the app shows an info line)
+  const subs = await loadSubs(fetchFn, env, idToken, who.person);
+  if (!subs.length) return { sent: 0, removed: 0, target: 'self', kind, ...rest, reason: 'no-subscription' };
+  const privateKey = await loadVapidKey(env);
+  const r = await sendToSubs({ fetchFn, env, now, auth: idToken, subs, payload: reminderMessage(rec, name), privateKey });
+  return { sent: r.sent, removed: r.removed, target: 'self', kind, ...rest };
+}
+
 async function notifyTest(target, who, idToken, env, deps) {
   const { fetchFn, now } = deps;
   const wait = claimTest(deps.testSeen || defaultTestSeen, who.person, now());
   if (wait) throw new HttpError(429, 'too many test notifications, wait a few seconds', { 'Retry-After': String(wait) });
+  if (target === 'reminder') return notifyReminderTest(who, idToken, env, deps);
 
   const recipient = target === 'self' ? who.person : other(who.person);
   const name = target === 'other' ? await callerName(fetchFn, env, who.person, idToken) : null;
-  const r = await deliver({ fetchFn, env, now, idToken, recipient, payload: buildTestPayload(target, name) });
+  const r = await deliver({ fetchFn, env, now, auth: idToken, recipient, payload: buildTestPayload(target, name) });
   if (r.noSubs) return { sent: 0, removed: 0, target, reason: 'no-subscription' };
   return { sent: r.sent, removed: r.removed, target };
 }
@@ -129,7 +99,7 @@ async function notify(request, env, deps) {
   const isTest = !!body && typeof body === 'object' && body.test !== undefined;
   const eventId = body && body.eventId;
   if (isTest) {
-    if (body.test !== 'self' && body.test !== 'other') throw new HttpError(400, 'invalid test target');
+    if (body.test !== 'self' && body.test !== 'other' && body.test !== 'reminder') throw new HttpError(400, 'invalid test target');
   } else if (typeof eventId !== 'string' || !EVENT_ID.test(eventId)) throw new HttpError(400, 'invalid eventId');
 
   const who = await verifyFirebaseIdToken(idToken, {
@@ -149,7 +119,7 @@ async function notify(request, env, deps) {
   if (!claim(seen, eventId, t)) return { sent: 0, removed: 0, duplicate: true };
 
   try {
-    const r = await deliver({ fetchFn, env, now, idToken, recipient: other(who.person), payload: buildPayload(event, eventId) });
+    const r = await deliver({ fetchFn, env, now, auth: idToken, recipient: other(who.person), payload: buildPayload(event, eventId) });
     if (r.noSubs) return { sent: 0, removed: 0 };
     if (r.transient) seen.delete(eventId); // transient failure: allow a retry
     return { sent: r.sent, removed: r.removed };
@@ -169,7 +139,7 @@ export async function handleRequest(request, env, deps) {
   }
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   try {
-    if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true }, 200, cors);
+    if (url.pathname === '/health' && request.method === 'GET') return json({ ok: true, scheduler: !!parseServiceAccount(env.FIREBASE_SERVICE_ACCOUNT) }, 200, cors);
     if (url.pathname === '/notify') {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405, { ...cors, Allow: 'POST, OPTIONS' });
       return json(await notify(request, env, deps), 200, cors);

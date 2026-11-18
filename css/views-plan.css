@@ -1,0 +1,50 @@
+/* Trailhead — views-plan view styles (plan, stats, notes, shell). Owned by UI-B; design tokens only. */
+
+/* App shell: breathing room under the sticky app bar. */
+.app-main { padding-top: var(--space-4); }
+
+/* Section headers inside stacks: the stack gap already spaces them. */
+.stack > .section-header { margin-bottom: 0; }
+
+/* Plan: expanded week detail (a .card spanning the grid row) */
+.week-detail { scroll-margin-top: calc(var(--safe-top) + var(--appbar-height) + var(--space-4)); }
+.week-detail__people { display: grid; grid-template-columns: 1fr; gap: var(--space-5); }
+@media (min-width: 640px) {
+  .week-detail__people { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.week-detail__run { display: flex; align-items: center; gap: var(--space-3); padding-block: var(--space-2); border-top: var(--border-width) solid var(--color-border); }
+.week-detail__run:first-child { border-top: 0; }
+.week-detail__run-info { flex: 1; min-width: 0; }
+.week-detail__run-type { font-weight: var(--weight-semibold); }
+.week-detail__run-note { font-size: var(--text-xs); color: var(--color-text-muted); }
+.week-detail__run .input-group { flex: none; width: 7.5rem; }
+.week-detail__entry { display: flex; align-items: center; gap: var(--space-2); padding-block: var(--space-1); font-size: var(--text-sm); }
+.week-detail__entry-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.week-detail__entry-meta { flex: none; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+
+/* Plan: banner with an inline date field */
+.plan-start { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.plan-start .input { width: auto; flex: 1 1 10rem; }
+
+/* Stats: run-type cards */
+.runtype-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-3); }
+@media (min-width: 640px) {
+  .runtype-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Scoreboard: this-week head-to-head rows */
+.h2h-row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); }
+.h2h-row__name { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--weight-semibold); font-size: var(--text-sm); min-width: 0; }
+.h2h-row__value { font-size: var(--text-sm); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+/* Notifications: scrollable list inside the sheet body */
+.notif-list .list-item { padding-inline: var(--space-3); }
+
+/* Gate: banners inside the centred box read left-aligned. */
+.gate__box .banner { margin-bottom: var(--space-4); text-align: left; }
+
+/* Toasts: event text reads at full contrast (the design-system default is muted). */
+.toast__text--main { color: var(--color-text); }
+
+/* Multi-colour brand glyph (Google "G"): keep its own fills, no stroke. */
+.icon--brand { fill: initial; stroke: none; }

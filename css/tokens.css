@@ -1,0 +1,256 @@
+/* =============================================================================
+   Trailhead design tokens
+   -----------------------------------------------------------------------------
+   Layer 1  PRIMITIVES  raw scales (colour ramps). Never use these in components.
+   Layer 2  SEMANTIC    purpose-named tokens. Components use ONLY these.
+   Then: spacing, type, radius, elevation, motion, z-index, layout.
+
+   Breakpoints (custom properties cannot be used inside @media, so the values
+   are documented here and repeated literally in the CSS):
+     base (mobile first)  0     - 639px   phone, bottom sheets, tab bar
+     sm                   640px +         centred dialogs, 2-column grids
+     md                   960px +         wider grids (not needed by most views)
+   Always write  @media (min-width: 640px) { ... }  -- never max-width.
+
+   Contrast (WCAG 2.1 AA, verified by script, see docs/DESIGN_SYSTEM.md):
+     body text >= 4.5:1, large text / UI components >= 3:1.
+   ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------------------
+     1. PRIMITIVES
+     ------------------------------------------------------------------------ */
+
+  /* Burgundy (surfaces and borders) */
+  --burgundy-950: #3a0f18;
+  --burgundy-900: #4a1420;
+  --burgundy-800: #5a1c29;
+  --burgundy-700: #642130;
+  --burgundy-600: #7a3244;
+  --burgundy-500: #b27a8a;
+
+  /* Cream and rose (text) */
+  --cream-50: #fff8ec;
+  --cream-100: #f5ead9;
+  --rose-300: #d9b3ba;
+  --rose-400: #c99ba6;
+
+  /* Gold (accent, person A) */
+  --gold-300: #f6d36a;
+  --gold-400: #eeb81c;
+  --gold-500: #dba233;
+  --gold-800: #6b4a1f;
+  --gold-900: #4a3419;
+
+  /* Olive (person B) */
+  --olive-300: #c7e0a4;
+  --olive-400: #bcae32;
+  --olive-900: #4a4318;
+
+  /* Sage (secondary) */
+  --sage-300: #d8c08a;
+  --sage-800: #6b3644;
+
+  /* Status hues */
+  --green-300: #a3d9a0;
+  --green-700: #2f6b3a;
+  --orange-300: #ffb86b;
+  --red-300: #ff9d9d;
+  --red-700: #a8322f;
+  --blue-300: #a6cdec;
+
+  /* ---------------------------------------------------------------------------
+     2. SEMANTIC COLOURS
+     ------------------------------------------------------------------------ */
+
+  /* Surfaces */
+  --color-bg: var(--burgundy-900);
+  --color-surface: var(--burgundy-800);
+  --color-surface-raised: var(--burgundy-700);
+  --color-surface-inset: rgba(0, 0, 0, 0.18);          /* wells, inputs (over a surface) */
+  --color-surface-glass: rgba(74, 20, 32, 0.92);       /* tab bar / app bar (over --color-bg) */
+  --color-overlay: rgba(20, 4, 8, 0.62);               /* modal backdrop */
+  --color-hover: rgba(245, 234, 217, 0.06);            /* hover wash on any surface */
+  --color-pressed: rgba(245, 234, 217, 0.12);
+
+  /* Borders */
+  --color-border: var(--burgundy-600);                 /* decorative dividers, card edges */
+  --color-border-strong: var(--burgundy-500);          /* >= 3:1 on surface: input outlines */
+
+  /* Text */
+  --color-text: var(--cream-100);
+  --color-text-strong: var(--cream-50);
+  --color-text-muted: var(--rose-300);
+  --color-text-faint: var(--rose-400);                 /* AA on bg, surface and raised */
+
+  /* Accent (gold) */
+  --color-accent: var(--gold-400);
+  --color-accent-strong: var(--gold-500);
+  --color-accent-soft: rgba(238, 184, 28, 0.12);
+  --color-on-accent: var(--burgundy-950);              /* ink on gold */
+  --color-secondary: var(--sage-300);
+  --color-secondary-soft: var(--sage-800);
+
+  /* People: a = Beatrix by default (gold), b = Julian by default (olive) */
+  --color-person-a: var(--gold-400);
+  --color-person-a-strong: var(--gold-500);
+  --color-person-a-soft: rgba(238, 184, 28, 0.12);
+  --color-person-b: var(--olive-400);
+  --color-person-b-strong: var(--olive-300);
+  --color-person-b-soft: rgba(188, 174, 50, 0.08);
+  --color-on-person: var(--burgundy-950);              /* ink on either person colour */
+
+  /* Status */
+  --color-success: var(--green-300);
+  --color-success-soft: rgba(163, 217, 160, 0.10);
+  --color-success-solid: var(--green-700);
+  --color-warning: var(--orange-300);
+  --color-warning-soft: rgba(255, 184, 107, 0.10);
+  --color-danger: var(--red-300);
+  --color-danger-soft: rgba(255, 157, 157, 0.10);
+  --color-danger-solid: var(--red-700);
+  --color-info: var(--blue-300);
+  --color-info-soft: rgba(166, 205, 236, 0.10);
+  --color-on-solid: var(--cream-50);                   /* text on *-solid fills */
+
+  /* Focus */
+  --color-focus: var(--cream-50);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* Gradients */
+  --gradient-accent: linear-gradient(90deg, var(--gold-400), var(--gold-500));
+  --gradient-person-a: linear-gradient(90deg, var(--gold-400), var(--gold-500));
+  --gradient-person-b: linear-gradient(90deg, var(--olive-400), var(--olive-300));
+  --gradient-card: linear-gradient(155deg, var(--burgundy-800) 0%, var(--gold-800) 130%);
+
+  /* ---------------------------------------------------------------------------
+     3. SPACING (4px base)
+     ------------------------------------------------------------------------ */
+  --space-0: 0;
+  --space-half: 0.125rem; /* 2px hairline nudges */
+  --space-1: 0.25rem;     /* 4  */
+  --space-2: 0.5rem;      /* 8  */
+  --space-3: 0.75rem;     /* 12 */
+  --space-4: 1rem;        /* 16 */
+  --space-5: 1.25rem;     /* 20 */
+  --space-6: 1.5rem;      /* 24 */
+  --space-8: 2rem;        /* 32 */
+  --space-10: 2.5rem;     /* 40 */
+  --space-12: 3rem;       /* 48 */
+  --space-16: 4rem;       /* 64 */
+
+  /* ---------------------------------------------------------------------------
+     4. TYPOGRAPHY
+     ------------------------------------------------------------------------ */
+  --font-display: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif;
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --text-xs: 0.75rem;     /* 12 labels, captions */
+  --text-sm: 0.875rem;    /* 14 secondary text */
+  --text-md: 1rem;        /* 16 body, form controls (prevents iOS zoom) */
+  --text-lg: 1.125rem;    /* 18 */
+  --text-xl: 1.375rem;    /* 22 card titles */
+  --text-2xl: 1.75rem;    /* 28 section titles */
+  --text-3xl: clamp(2rem, 7vw, 2.5rem);     /* 32-40 page titles, stats */
+  --text-4xl: clamp(2.5rem, 10vw, 3.5rem);  /* 40-56 hero numbers */
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-extrabold: 800;
+
+  --leading-none: 1;
+  --leading-tight: 1.1;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-wider: 0.1em;
+
+  /* ---------------------------------------------------------------------------
+     5. RADIUS
+     ------------------------------------------------------------------------ */
+  --radius-xs: 0.25rem;   /* 4  */
+  --radius-sm: 0.5rem;    /* 8  small inputs, tags */
+  --radius-md: 0.75rem;   /* 12 buttons, inputs */
+  --radius-lg: 1rem;      /* 16 tiles, list groups */
+  --radius-xl: 1.5rem;    /* 24 cards, sheets */
+  --radius-full: 999px;   /* pills, avatars */
+
+  --border-width: 1px;
+  --border-width-strong: 2px;
+
+  /* ---------------------------------------------------------------------------
+     6. ELEVATION
+     ------------------------------------------------------------------------ */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.25);   /* the signature soft card shadow */
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.35);  /* dialogs, toasts */
+  --shadow-up: 0 -8px 32px rgba(0, 0, 0, 0.35); /* bottom sheet, tab bar */
+  --shadow-glow-accent: 0 6px 20px rgba(238, 184, 28, 0.35); /* record button */
+
+  /* ---------------------------------------------------------------------------
+     7. MOTION
+     ------------------------------------------------------------------------ */
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ---------------------------------------------------------------------------
+     8. Z-INDEX
+     ------------------------------------------------------------------------ */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 100;     /* app bar */
+  --z-tabbar: 300;
+  --z-fab: 350;
+  --z-sheet: 410;      /* sheet / dialog incl. its backdrop */
+  --z-toast: 500;
+  --z-gate: 1000;      /* auth / identity gate */
+
+  /* ---------------------------------------------------------------------------
+     9. LAYOUT AND SIZING
+     ------------------------------------------------------------------------ */
+  --content-max: 780px;
+  --gutter: var(--space-4);         /* 24px from 640px up, set below */
+  --appbar-height: 3.5rem;
+  --tabbar-height: 4rem;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  --touch-min: 2.75rem;             /* 44px: minimum hit target */
+  --control-h-sm: 2.25rem;          /* 36px visual, hit area is padded to --touch-min */
+  --control-h-md: 2.75rem;          /* 44px */
+  --control-h-lg: 3.25rem;          /* 52px */
+  --icon-sm: 1rem;
+  --icon-md: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --gutter: var(--space-6);
+  }
+}
+
+/* Reduced motion: collapse every duration; components also drop transforms. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0.01ms;
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+}

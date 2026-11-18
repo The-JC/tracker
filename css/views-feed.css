@@ -1,0 +1,29 @@
+/* Trailhead — views-feed view styles. Owned by the UI agents; use design tokens only.
+   Feed-specific extras only: everything else comes from the design system (docs/DESIGN_SYSTEM.md). */
+
+.feed-skeleton-short { width: 40%; }
+.feed-view__earlier { margin-top: var(--space-2); }
+
+/* Photo area of an activity card: the whole image is one tap target that opens the viewer. */
+.feed-photo-btn,
+.feed-photo-skeleton { display: block; width: 100%; height: 100%; }
+.feed-photo-btn { padding: 0; border: 0; background: none; cursor: zoom-in; }
+.feed-photo-btn:focus-visible { outline-offset: calc(-1 * var(--focus-ring-width)); }
+.feed-photo-skeleton { aspect-ratio: auto; border-radius: 0; }
+.feed-photo-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); height: 100%; margin: 0; }
+
+/* Full-screen photo viewer (teleported to <body>). */
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--color-overlay);
+  -webkit-backdrop-filter: blur(var(--space-1));
+  backdrop-filter: blur(var(--space-1));
+}
+.photo-viewer__img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-md); box-shadow: var(--shadow-3); }
+.photo-viewer__close { position: absolute; top: calc(var(--space-4) + var(--safe-top)); right: var(--space-4); }

@@ -1,0 +1,22 @@
+{
+  "name": "trailhead-tracker",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test tests/",
+    "deploy": "npm run build && npx wrangler@4 deploy",
+    "rules:render": "node scripts/render-rules.mjs",
+    "deploy:rules": "npm run rules:render && npx firebase-tools deploy --only database"  },
+  "dependencies": {
+    "firebase": "^10.13.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.11"
+  }
+}

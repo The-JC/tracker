@@ -1,0 +1,10 @@
+# Cloudflare Workers static assets: the service worker and manifest must always be revalidated;
+# hashed files in /assets are immutable.
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

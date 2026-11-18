@@ -1,0 +1,9 @@
+node_modules
+dist
+.env*.local
+.DS_Store
+.wrangler
+.dev.vars
+
+# Rendered from database.rules.template.json with the real emails (see scripts/render-rules.mjs)
+database.rules.json

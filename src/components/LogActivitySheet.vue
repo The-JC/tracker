@@ -9,7 +9,7 @@ import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
 import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate } from '../store.js';
 import {
   validateActivityInput, defaultTitle, pointsFor, paceMinPerKm, formatPace, formatKm,
-  weekForDate, effectiveStartDate as calcStartDate
+  weekForDate, effectiveStartDate as calcStartDate, formatDateLong
 } from '../scoring.js';
 import { SPORTS, RUN_TYPES, SPORT_BY_KEY, PLAN } from '../plan.js';
 import { compressImage } from '../utils/image.js';
@@ -82,7 +82,10 @@ const weekInfo = computed(() => {
     ? calcStartDate(store.settings.startDate, [...others, { sport: 'run', date: iso }], today.value)
     : effectiveStartDate.value;
   const n = weekForDate(start, iso);
-  return { n, inPlan: n >= 1 && n <= PLAN.length };
+  // Without an explicit plan start, an earlier run than all existing ones moves week 1 back (so every week shifts).
+  const movesStart = form.value.sport === 'run' && !store.settings.startDate && start < effectiveStartDate.value
+    && others.some(e => e.sport === 'run' && e.date);
+  return { n, inPlan: n >= 1 && n <= PLAN.length, movesStart, start };
 });
 
 /* ---------- open / close: scroll lock, focus, Escape ---------- */
@@ -290,8 +293,12 @@ async function save() {
 
           <div v-if="weekInfo" class="row row--wrap">
             <span v-if="weekInfo.inPlan" class="chip chip--info">{{ form.sport === 'run' ? 'Counts for' : 'Logged in' }} Week {{ weekInfo.n }}</span>
-            <span v-else class="chip chip--info">Outside the plan{{ form.sport === 'run' ? ': won\'t count for a week' : '' }}</span>
+            <span v-else class="chip chip--info">{{ weekInfo.n < 1 ? 'Before the plan start' : 'After the plan' }}: saved, counts for points{{ form.sport === 'run' ? ', not for a plan week' : '' }}</span>
           </div>
+          <p v-if="weekInfo && weekInfo.movesStart" class="field__hint">
+            This is earlier than your plan start, so Week 1 moves back to {{ formatDateLong(weekInfo.start) }} and every week shifts.
+            To keep the plan where it is, set the plan start date in Settings first.
+          </p>
 
           <div class="field">
             <label class="field__label" for="log-note">Note (optional)</label>

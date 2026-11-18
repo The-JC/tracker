@@ -247,6 +247,22 @@
   min-height: 5.5rem;
   padding: var(--space-3) var(--space-4);
 }
+/* iOS Safari sizes date/time inputs by their native content and can ignore width: 100%, making them wider than the field
+   (the sheet then scrolls sideways). Strip the native chrome so they behave like every other input. */
+.input[type="date"],
+.input[type="time"],
+.input[type="datetime-local"] {
+  -webkit-appearance: none;
+  appearance: none;
+  max-width: 100%;
+  text-align: left;
+}
+.input[type="date"]::-webkit-date-and-time-value,
+.input[type="time"]::-webkit-date-and-time-value,
+.input[type="datetime-local"]::-webkit-date-and-time-value {
+  min-width: 0;
+  text-align: left;
+}
 .input::placeholder,
 .textarea::placeholder {
   color: var(--color-text-faint);
@@ -994,6 +1010,7 @@ button.chip:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden; /* Safari turns overflow-y: auto into a sideways scroller when any child is a pixel too wide */
   overscroll-behavior: contain;
   padding: var(--space-2) var(--space-5) var(--space-5);
 }

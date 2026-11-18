@@ -256,11 +256,19 @@
   appearance: none;
   max-width: 100%;
   text-align: left;
+  /* Without the native chrome Safari top-aligns the value inside min-height: give the box a real height and centre it. */
+  display: flex;
+  align-items: center;
+  height: var(--control-h-md);
+  line-height: 1.2;
 }
 .input[type="date"]::-webkit-date-and-time-value,
 .input[type="time"]::-webkit-date-and-time-value,
 .input[type="datetime-local"]::-webkit-date-and-time-value {
   min-width: 0;
+  min-height: 1.2em; /* an empty value would otherwise collapse to 0 height and sit at the top */
+  margin: 0;
+  padding: 0;
   text-align: left;
 }
 .input::placeholder,

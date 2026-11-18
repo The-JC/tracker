@@ -133,3 +133,26 @@ test('testPushMessage: human messages and kinds', () => {
   assert.equal(testPushMessage({ ok: true, sent: 0, reason: 'not-delivered' }).kind, 'warning');
   assert.equal(testPushMessage(undefined).kind, 'error');
 });
+
+test("sendTestPush/testPushMessage: the 'reminder' target", async () => {
+  const reply = (status, body) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+  let sentBody = null;
+  const spy = async (u, init) => { sentBody = JSON.parse(init.body); return reply(200, { sent: 2 })(); };
+  const base = { url: 'https://w.example', getToken: async () => 'tok' };
+  const r = await sendTestPush('reminder', { ...base, fetch: spy });
+  assert.deepEqual(sentBody, { test: 'reminder' });
+  assert.deepEqual(r, { ok: true, sent: 2, status: 200 });
+  assert.deepEqual(testPushMessage(r, 'reminder'), { kind: 'success', message: 'Reminder sent to 2 devices — it should arrive within a few seconds' });
+  assert.match(testPushMessage({ ok: true, sent: 1 }, 'reminder').message, /^Reminder sent to 1 device /);
+  // rest day: the message is still sent, the banner explains
+  const rest = await sendTestPush('reminder', { ...base, fetch: reply(200, { sent: 1, rest: true }) });
+  assert.deepEqual(rest, { ok: true, sent: 1, rest: true, status: 200 });
+  assert.deepEqual(testPushMessage(rest, 'reminder'), { kind: 'info', message: 'Today there is no run to recommend (rest day) — the test message says so' });
+  assert.equal(testPushMessage(await sendTestPush('reminder', { ...base, fetch: reply(200, { sent: 0, reason: 'no-run' }) }), 'reminder').kind, 'info');
+  // rest is only a reminder concept
+  assert.equal((await sendTestPush('self', { ...base, fetch: reply(200, { sent: 1, rest: true }) })).rest, undefined);
+  const none = await sendTestPush('reminder', { ...base, fetch: reply(200, { sent: 0, reason: 'no-subscription' }) });
+  assert.equal(none.reason, 'no-subscription');
+  assert.equal(testPushMessage(none, 'reminder').kind, 'warning');
+  assert.equal(testPushMessage({ ok: false, reason: 'rate-limited' }, 'reminder').kind, 'warning');
+});

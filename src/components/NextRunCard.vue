@@ -1,10 +1,10 @@
 <script setup>
 // NextRunCard: "Next up" recommendation for the signed-in person, on top of the Feed.
 // Props: none. Emits: 'log' (open the Log sheet; it is prefilled through logPrefill.js when a run is recommended).
-// Reads store.me / log / weeks (store.js). All decisions come from recommend.js (pure, rule based, explainable).
+// Reads store.me / log / weeks (store.js). All decisions come from recommendForPerson.js / recommend.js (pure, rule based, explainable).
 import { computed } from 'vue';
-import { store, weeks, today, effectiveStartDate } from '../store.js';
-import { recommendNext } from '../recommend.js';
+import { store, weeks, today } from '../store.js';
+import { recommendForPerson } from '../recommendForPerson.js';
 import { formatKm } from '../scoring.js';
 import { setLogPrefill } from '../logPrefill.js';
 import '../../css/next-run.css';
@@ -23,10 +23,10 @@ const dayLabel = iso => {
 
 const rec = computed(() => {
   if (!store.me || !store.logLoaded) return null;
-  return recommendNext({
-    weeks: weeks.value, person: store.me, log: store.log, goals: store.goals,
-    todayISO: today.value, startDate: effectiveStartDate.value
-  });
+  // Same pipeline the daily reminder (Worker) uses, so the card and the push can never disagree.
+  return recommendForPerson({
+    person: store.me, log: store.log, goals: store.goals, startDateSetting: store.settings.startDate, todayISO: today.value
+  }).rec;
 });
 
 const runText = run => (run.km ? `${run.type} · ${formatKm(run.km)} km` : run.type);

@@ -38,6 +38,7 @@ trailhead-tracker-v1/
   nameA, nameB                      legacy, still read/written for names
   goals/{runId}: "5.5"              plan-km overrides (legacy format, kept)
   settings/{startDate, migratedV1}
+  settings/reminders/{a|b}: { enabled, time:'HH:MM', tz, lastSentDate:'YYYY-MM-DD'|null, updatedTs }   daily run reminder (see below)
   log/{id}: ActivityEntry
   photos/{id}: "data:image/jpeg;base64,…"
   events/{id}: EventEntry
@@ -66,6 +67,8 @@ EventEntry = { id, actor:'a'|'b', kind:'activity'|'kudos'|'week'|'note', text: s
 ```
 
 Sports: `run` (needs km), `hike` (needs km, 0.5 pts/km), `cycle` (needs min, 0.4/30 min), `swim` (needs min, 0.6/30 min), `strength` (needs min, 0.5/30 min), `workout` (needs min, 0.6/30 min). Runs: points = km × run-type multiplier. All sports accept optional extra fields (`durationMin` for runs → pace).
+
+**Daily run reminder** (`settings/reminders/<a|b>`): `enabled` boolean (default off), `time` 'HH:MM' 24 h in the person's own time zone (default '07:30', 5-minute steps), `tz` IANA zone of the device that last saved it (kept fresh on app start/sign-in/foreground while enabled, for travel), `lastSentDate` 'YYYY-MM-DD' (the person's local date of the last reminder; **written by the Cloudflare cron**, and by the client only to *today* when an enabled time is saved that has already passed today, so enabling at 21:00 for 20:00 does not fire at once), `updatedTs` ms. The client merges only `enabled/time/tz/updatedTs` (+ that one `lastSentDate` case), never `undefined` values, and each person edits only their own node. The cron sends today's recommended run (same as the Next-up card) to the person's `pushSubs`, only on days with a run and nothing logged yet. `POST /notify {"test":"reminder"}` sends a test of it.
 
 **Week fulfilment** (per person, per plan week): planned km `P` = sum of that person's goals (override ?? default) for the week; done km `D` = sum of `km` of `sport:'run'` entries mapped to that week; `pct = P ? min(100, round(100·D/P)) : null`. Status: `fulfilled` (pct = 100), `missed` (week over, pct < 100), `current` (week contains today, pct < 100), `upcoming`. Races/weeks with `P = 0` → `n/a`.
 
@@ -103,6 +106,7 @@ export const store = reactive({
   me: 'a'|'b'|null,                 // derived from user.email via PEOPLE; never chosen manually
   names: { a:'Beatrix', b:'Julian' },
   settings: { startDate: null|'YYYY-MM-DD' },
+  reminders: { a: Reminder, b: Reminder },   // Reminder = { enabled, time:'HH:MM', tz, lastSentDate:null|'YYYY-MM-DD', updatedTs } with defaults filled (src/utils/reminderTime.js normalizeReminder)
   goals: { [runId]: string },
   log: ActivityEntry[],            // newest first (date desc, then ts desc)
   events: EventEntry[],            // newest first
@@ -130,6 +134,11 @@ export function toggleKudos(id): Promise<void>    // emits 'kudos' event when gi
 export function loadPhoto(id): Promise<string|null>   // cached
 export function postNote({text, imageDataUrl}): Promise<void>; export function deleteNote(key): Promise<void>
 export function markEventsRead(), dismissToast(id), enableSystemNotifications(): Promise<void>
+export function setReminder({ enabled?, time? }): Promise<Reminder>
+  // own settings/reminders/<me> only; time must be 'HH:MM' (00:00-23:59, else throws) and is rounded to 5 minutes; omitted fields keep their value;
+  // stamps tz (device zone) + updatedTs, merges only those fields (never touches lastSentDate except: = today when an enabled time has already passed today);
+  // optimistic, offline-safe (settle). The store also re-stamps tz silently on start/sign-in/foreground when the device zone changed and reminders are on.
+export function sendTestNotification(target: 'self'|'other'|'reminder'): Promise<void>   // result in store.testPush; 'reminder' = Worker POST /notify {"test":"reminder"}
 ```
 
 Components (one `.vue` SFC each, in `src/components/`; they read `store` directly, no prop plumbing needed unless stated):

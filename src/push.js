@@ -76,12 +76,14 @@ export async function notifyWorker({
   }
 }
 
-// Asks the Worker to send a test push: target 'self' (this person's devices) or 'other'. Injectable, never throws.
-// -> { ok, sent, reason?, status? }. ok = the Worker answered 2xx. reason: 'no-subscription' | 'not-delivered' (2xx, sent 0)
+// Asks the Worker to send a test push: target 'self' (this person's devices), 'other', or 'reminder' (this person's daily
+// run reminder with today's recommendation; the Worker may answer `rest: true` / reason 'no-run' when there is no run today,
+// the message then says so). Injectable, never throws.
+// -> { ok, sent, rest?, reason?, status? }. ok = the Worker answered 2xx. reason: 'no-subscription' | 'not-delivered' (2xx, sent 0)
 // | 'rate-limited' (429) | 'http' (other status) | 'network' (unreachable / timeout) | 'not-configured' | 'bad-target'.
 export async function sendTestPush(target, { fetch: fetchFn = globalThis.fetch, getToken, url, timeoutMs = 8000 } = {}) {
   const base = String(url || '').trim().replace(/\/+$/, '');
-  if (target !== 'self' && target !== 'other') return { ok: false, sent: 0, reason: 'bad-target' };
+  if (target !== 'self' && target !== 'other' && target !== 'reminder') return { ok: false, sent: 0, reason: 'bad-target' };
   if (!base || typeof fetchFn !== 'function' || typeof getToken !== 'function') return { ok: false, sent: 0, reason: 'not-configured' };
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
@@ -99,7 +101,9 @@ export async function sendTestPush(target, { fetch: fetchFn = globalThis.fetch, 
     let data = null;
     try { data = await res.json(); } catch (e) { /* treated as sent 0 below */ }
     const sent = data && Number.isFinite(data.sent) ? data.sent : 0;
-    if (sent > 0) return { ok: true, sent, status: res.status };
+    const rest = target === 'reminder' && !!data && (data.rest === true || data.reason === 'no-run');
+    if (sent > 0) return rest ? { ok: true, sent, rest: true, status: res.status } : { ok: true, sent, status: res.status };
+    if (rest) return { ok: true, sent: 0, rest: true, status: res.status, reason: 'no-run' };
     return { ok: true, sent: 0, status: res.status, reason: data && data.reason === 'no-subscription' ? 'no-subscription' : 'not-delivered' };
   } catch (e) {
     return { ok: false, sent: 0, reason: 'network' };
@@ -110,10 +114,14 @@ export async function sendTestPush(target, { fetch: fetchFn = globalThis.fetch, 
 
 // sendTestPush result -> { kind: 'success'|'warning'|'error', message } for the Settings banner.
 export function testPushMessage(r, target = 'self') {
+  if (target === 'reminder') {
+    if (r && r.ok && r.rest) return { kind: 'info', message: 'Today there is no run to recommend (rest day) \u2014 the test message says so' };
+    if (r && r.ok && r.sent > 0) return { kind: 'success', message: `Reminder sent to ${r.sent} ${r.sent === 1 ? 'device' : 'devices'} \u2014 it should arrive within a few seconds` };
+  }
   if (r && r.ok && r.sent > 0) return { kind: 'success', message: `Sent to ${r.sent} ${r.sent === 1 ? 'device' : 'devices'} \u2014 it should arrive within a few seconds` };
   const reason = r && r.reason;
   if (reason === 'no-subscription') {
-    return { kind: 'warning', message: target === 'self' ? 'No device registered yet \u2014 tap Enable alerts on this device first' : 'No device registered yet \u2014 tap Enable alerts on that phone first' };
+    return { kind: 'warning', message: target === 'self' || target === 'reminder' ? 'No device registered yet \u2014 tap Enable alerts on this device first' : 'No device registered yet \u2014 tap Enable alerts on that phone first' };
   }
   if (reason === 'not-delivered') return { kind: 'warning', message: 'The push service did not accept the message. Try again, or turn alerts off and on again on the receiving device' };
   if (reason === 'rate-limited') return { kind: 'warning', message: 'Too many tests, wait a few seconds' };

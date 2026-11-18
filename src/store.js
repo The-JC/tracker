@@ -21,11 +21,12 @@ import {
 import { resolveUser } from './identity.js';
 import { settle } from './utils/settle.js';
 import { prepareEdit, newlyFulfilledWeek, hasWeekEvent } from './utils/entryPatch.js';
+import { normalizeReminder, isValidTime, roundTime, deviceTimeZone, isValidTimeZone, buildReminderPatch } from './utils/reminderTime.js';
 
 const DEFAULT_NAMES = { a: PEOPLE.a.name, b: PEOPLE.b.name };
 const P = {
   nameA: `${DB_ROOT}/nameA`, nameB: `${DB_ROOT}/nameB`, goals: `${DB_ROOT}/goals`, checks: `${DB_ROOT}/checks`,
-  activities: `${DB_ROOT}/activities`, settings: `${DB_ROOT}/settings`, log: `${DB_ROOT}/log`,
+  activities: `${DB_ROOT}/activities`, settings: `${DB_ROOT}/settings`, reminders: `${DB_ROOT}/settings/reminders`, log: `${DB_ROOT}/log`,
   photos: `${DB_ROOT}/photos`, events: `${DB_ROOT}/events`, pushSubs: `${DB_ROOT}/pushSubs`, messages: MESSAGES_ROOT
 };
 const TOAST_MS = 5000;
@@ -53,6 +54,7 @@ export const store = reactive({
   me: null,             // 'a' | 'b', derived from the account's email (never chosen manually)
   names: { ...DEFAULT_NAMES },
   settings: { startDate: null },
+  reminders: { a: normalizeReminder(), b: normalizeReminder() }, // settings/reminders/<a|b>: daily run reminder (the server writes lastSentDate)
   goals: {},
   log: [],
   logLoaded: false,     // true after the first `log` snapshot (feed skeleton vs. empty state)
@@ -88,6 +90,7 @@ let started = null; // promise, so initStore() is idempotent
 let unsubs = [];
 let knownEventIds = null; // null until the first events snapshot (baseline, no toasts)
 let migrationTried = false;
+let remindersLoaded = false; // true after the first settings/reminders snapshot (defaults must never be mistaken for stored data)
 const photoCache = new Map();
 
 const asEntries = obj => Object.entries(obj || {}).map(([key, v]) => ({ ...v, id: v.id || key }));
@@ -111,6 +114,12 @@ function startSync() {
     store.settings.startDate = s.startDate && isValidISODate(s.startDate) ? s.startDate : null;
     if (!s.migratedV1 && !migrationTried) { migrationTried = true; runMigration(); }
   });
+  sub(P.reminders, v => {
+    const r = v && typeof v === 'object' ? v : {};
+    store.reminders = { a: normalizeReminder(r.a), b: normalizeReminder(r.b) };
+    remindersLoaded = true;
+    syncReminderTz();
+  });
   sub(P.log, v => { const next = sortLog(asEntries(v)); dropStalePhotos(store.log, next); store.log = next; store.logLoaded = true; store.syncError = ''; });
   sub(P.events, v => onEvents(asEntries(v)), { limitToLast: 50 });
   sub(P.messages, v => {
@@ -132,6 +141,8 @@ function stopSync() {
   unsubs = [];
   store.log = []; store.logLoaded = false; store.syncError = ''; store.events = []; store.notes = []; store.goals = {};
   store.settings.startDate = null;
+  store.reminders = { a: normalizeReminder(), b: normalizeReminder() };
+  remindersLoaded = false;
   knownEventIds = null;
   photoCache.clear();
 }
@@ -205,6 +216,7 @@ export function initStore() {
         refreshToday();
         store.notifPermission = currentPermission(); // the user may have changed it in the browser/system settings
         syncPushSubscription();
+        syncReminderTz();
       });
       setInterval(refreshToday, 60000);
     }
@@ -274,6 +286,40 @@ export async function setStartDate(iso) {
   if (iso && !isValidISODate(iso)) throw new Error('Invalid date.');
   store.settings.startDate = iso || null;
   await settle(iso ? backend.set(`${P.settings}/startDate`, iso) : backend.remove(`${P.settings}/startDate`));
+}
+
+// Daily run reminder (settings/reminders/<me>). Only enabled/time/tz/updatedTs are merged in (the Worker owns
+// lastSentDate), plus lastSentDate = today when an enabled time has already passed today in the person's zone, so
+// enabling at 21:00 for 20:00 does not fire at once. `time` is validated ('HH:MM') and rounded to 5 minutes;
+// omitted fields keep their current value. Throws on invalid input; offline writes are queued (settle).
+export async function setReminder({ enabled, time } = {}) {
+  const me = validPerson(store.me);
+  if (!me || !backend) throw new Error('You are not signed in.');
+  const cur = store.reminders[me];
+  let t = cur.time;
+  if (time !== undefined && time !== null) {
+    if (!isValidTime(time)) throw new Error('Enter a time like 07:30.');
+    t = roundTime(time);
+  }
+  const tz = deviceTimeZone() || cur.tz || 'UTC';
+  const patch = buildReminderPatch({ enabled: enabled === undefined ? cur.enabled : !!enabled, time: t, tz });
+  store.reminders[me] = { ...cur, ...patch }; // optimistic, the snapshot confirms
+  await settle(backend.update(`${P.reminders}/${me}`, clean(patch)));
+  return store.reminders[me];
+}
+
+// Travel: when reminders are on and this device is in another time zone than the stored one, silently store the new zone.
+let tzSyncing = '';
+async function syncReminderTz() {
+  const me = validPerson(store.me);
+  const tz = deviceTimeZone();
+  if (!me || !backend || !remindersLoaded || !isValidTimeZone(tz)) return;
+  const cur = store.reminders[me];
+  if (!cur.enabled || cur.tz === tz || tzSyncing === tz) return;
+  tzSyncing = tz;
+  try { await settle(backend.update(`${P.reminders}/${me}`, { tz, updatedTs: Date.now() })); }
+  catch (e) { console.warn('Could not update the reminder time zone:', e); }
+  finally { tzSyncing = ''; }
 }
 
 // Plan-km override in the legacy format (string under goals/<runId>); empty string clears the override.
@@ -540,7 +586,8 @@ export async function disableSystemNotifications() {
   } finally { store.pushBusy = false; }
 }
 
-// Settings: ask the Worker for a test push to this person's devices ('self') or the other person's ('other').
+// Settings: ask the Worker for a test push to this person's devices ('self'), the other person's ('other'), or this
+// person's daily run reminder with today's recommendation ('reminder').
 // Never throws; the outcome lands in store.testPush for the Settings banner.
 export async function sendTestNotification(target) {
   if (store.testPush.busy) return;

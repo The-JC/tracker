@@ -1,0 +1,17 @@
+name = "trailhead-push"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+PROJECT_ID = "trailhead-hellner-tracker"
+DB_URL = "https://trailhead-hellner-tracker-default-rtdb.europe-west1.firebasedatabase.app"
+# Comma separated; exact origins or a leading wildcard subdomain (https://*.pages.dev).
+ALLOWED_ORIGINS = "https://trailhead-tracker.trailhead-push.workers.dev,http://localhost:5173"
+# Output of `node scripts/gen-vapid.mjs` (public half only; it is not secret).
+VAPID_PUBLIC_KEY = "BLOFMs9atmsJhzyABEgztqkOq9xqv5FlOeuaN_3MzLbUx7IhOQigjIlKP7_O2Sl0UqTpxMNenj3ogwHgFeujLhk"
+
+# Secrets (never put them in this file; set with `npx wrangler secret put <NAME>`):
+#   VAPID_PRIVATE_KEY   output of scripts/gen-vapid.mjs
+#   PERSON_A_EMAIL      lowercase Google email of person a
+#   PERSON_B_EMAIL      lowercase Google email of person b
+#   VAPID_SUBJECT       mailto:<contact email> (identifies the sender to push services)

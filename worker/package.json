@@ -1,0 +1,16 @@
+{
+  "name": "trailhead-push",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that sends Web Push (VAPID, aes128gcm) for the Trailhead tracker, no Firebase Cloud Functions needed",
+  "scripts": {
+    "test": "node --test tests/",
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "gen-vapid": "node scripts/gen-vapid.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -17,7 +17,7 @@ const run = (person, date, km, extra = {}) =>
 /* ---------- normalisation ---------- */
 
 test('DEFAULT_PLAN_STATE and empty input give the documented defaults', () => {
-  const want = { mode: 'calendar', startDate: null, raceDate: null, pauses: [], skipped: [], trainingDays: [], weeklyTarget: null, fallbackStartDate: null };
+  const want = { mode: 'calendar', startDate: null, raceDate: null, pauses: [], skipped: [], repeatWeeks: [], trainingDays: [], weeklyTarget: null, fallbackStartDate: null };
   assert.deepEqual(DEFAULT_PLAN_STATE, want);
   for (const raw of [undefined, null, 'x', 5, [], {}]) {
     assert.deepEqual(normalizePlanState(raw), { a: want, b: want });
@@ -42,7 +42,7 @@ test('normalizePlanState keeps valid fields per person and drops invalid ones wi
   assert.deepEqual(n.a, {
     mode: 'rolling', startDate: '2026-03-02', raceDate: '2026-09-27',
     pauses: [{ from: '2026-04-01', to: '2026-04-07', note: 'holiday' }],
-    skipped: ['w7-speed'], trainingDays: [2, 4, 6], weeklyTarget: 4, fallbackStartDate: null
+    skipped: ['w7-speed'], repeatWeeks: [], trainingDays: [2, 4, 6], weeklyTarget: 4, fallbackStartDate: null
   });
   assert.deepEqual(n.b, DEFAULT_PLAN_STATE);
 });

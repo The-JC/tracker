@@ -4,7 +4,8 @@
 // Calls toggleKudos / deleteActivity / loadPhoto from the store directly.
 // The photo is fetched lazily (IntersectionObserver) only when entry.hasPhoto; imported legacy entries render compact.
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { store, today, toggleKudos, deleteActivity, loadPhoto, pushToast } from '../store.js';
+import { store, today, toggleKudos, deleteActivity, loadPhoto, pushToast, rollingViews } from '../store.js';
+import { explainMatch } from '../rolling.js';
 import { pointsFor, paceMinPerKm, formatPace, formatKm, relativeDate } from '../scoring.js';
 import { SPORT_BY_KEY, RUN_TYPE_BY_KEY } from '../plan.js';
 
@@ -20,6 +21,11 @@ const sport = computed(() => SPORT_BY_KEY[e.value.sport] || { label: 'Activity',
 const when = computed(() => relativeDate(e.value.date, today.value) || (e.value.week ? `Week ${e.value.week}` : 'Imported'));
 const runType = computed(() => (e.value.sport === 'run' ? RUN_TYPE_BY_KEY[e.value.runType] : null));
 const compact = computed(() => !!e.value.imported);
+// Flexible plan: which session a run counts for ('Counts for Tempo, Week 7' / 'Free run').
+const matchLine = computed(() => {
+  const v = e.value.sport === 'run' && e.value.km > 0 ? rollingViews.value[person.value] : null;
+  return v ? explainMatch(e.value.id, v.match, v.sessions) : '';
+});
 
 /* ---------- stats: only those that exist ---------- */
 
@@ -145,6 +151,7 @@ function cancelDelete() {
     <div class="activity-card__body">
       <h3 class="activity-card__title">{{ entry.title }}</h3>
       <p v-if="entry.note" class="activity-card__note">{{ entry.note }}</p>
+      <p v-if="matchLine" class="text-sm text-muted" data-testid="match-line">{{ matchLine }}</p>
       <div v-if="runType || compact" class="activity-card__tags">
         <span v-if="runType" class="tag tag--accent">{{ runType.name }} ×{{ runType.mult }}</span>
         <span v-if="compact" class="tag">Imported</span>

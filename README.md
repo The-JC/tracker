@@ -6,7 +6,8 @@ kudos, weekly fulfilment per person, head-to-head scoring, notes, and notificati
 ## Features
 
 - **Plan overview**: 30 week tiles per person (fulfilled / current / missed / upcoming, % of planned km). Tap a week to see the
-  planned runs, edit the km goal, and see what was logged into it. The start date is configurable.
+  planned runs, edit the km goal, and see what was logged into it. Each person has their own plan settings (Settings, My plan).
+- **Flexible plan** (optional, per person): follow your progress instead of the calendar, see below.
 - **Log activity**: run, hike, cycle, swim, strength, workout, with date, distance or time, note and photo. Live points and pace preview.
   Points = km x run-type multiplier (easy 1, long 1.3, tempo 1.6, speed 1.8, shakeout 1, race 3); hike 0.5/km; cycle 0.4, swim 0.6,
   strength 0.5, workout 0.6 per 30 min.
@@ -102,8 +103,12 @@ Realtime Database, everything below `trailhead-tracker-v1/` (full contract in `d
 ```
 nameA, nameB                 display names (legacy keys, still used)
 goals/{runId}                plan-km overrides, e.g. "1-12-2-b": "9"
-settings/{startDate, migratedV1}
-log/{id}                     ActivityEntry {person, sport, runType?, title, date, km?, durationMin?, note?, week?, hasPhoto, kudos?{a,b}, imported?, ts}
+settings/{startDate, migratedV1}   startDate = legacy shared start, the fallback of both people
+plans/{a|b}                  per-person plan state {mode?: 'calendar'|'rolling', startDate?, raceDate?, pauses?: [{from,to,note?}], skipped?: [sessionId],
+                             repeatWeeks?: [planWeek], trainingDays?: [0-6], weeklyTarget?: 1-14}; absent node = fixed weeks, today's behaviour.
+                             Each person writes only their own node (the app enforces it); the Worker only reads it.
+log/{id}                     ActivityEntry {person, sport, runType?, title, date, km?, durationMin?, note?, week?, session?, hasPhoto, kudos?{a,b}, imported?, ts}
+                             session = plan session the run is pinned to ('1-7-1-a', '...~r2' = repeat pass) or 'free' (never counts for a session)
 photos/{id}                  data URL, compressed client side (<= ~400 KB); loaded lazily, removed with its entry
 events/{id}                  {actor, kind: activity|kudos|week|note, text, refId?, ts}  -> toasts, bell, push
 pushSubs/{a|b}/{hash}        Web Push subscriptions of that person's devices
@@ -112,8 +117,25 @@ trailhead-tracker-v1-messages/{key}   notes {sender, name, text, image, ts}
 
 Week fulfilment: planned km = sum of the person's goals for the week, done km = their `run` entries mapped to the week
 (`floor((date - startDate)/7) + 1`, or an explicit `week`). 100% = fulfilled; a finished week below 100% is missed.
-The start date is `settings/startDate`, else the Monday of the first logged run's week. One-time migration (`settings/migratedV1`)
+The start date is the person's own `plans/<p>/startDate`, else `settings/startDate`, else the Monday of the first logged run's week. One-time migration (`settings/migratedV1`)
 turns the old checkbox data (`checks`, `activities`) into log entries; legacy keys are never deleted.
+
+## Flexible plan
+
+By default everything works as it always did (**Fixed weeks**): plan week 1 starts on your start date, every week has its dates, and a
+week you do not finish counts as missed. In Settings, **My plan** you can switch your own plan to **Flexible**:
+
+- Progress follows your runs, not the calendar. Your next session is the first one you have not done yet; weeks are never "missed",
+  you are only "behind by N sessions". A run counts for the earliest open session of its type; the log form shows
+  "Counts for: Tempo, Week 7" and lets you pick another session or "Free run (no session)" (still earns points). Short runs (under 90%) count as partly done.
+- **Pause** a date range (holiday, illness): paused days do not count as behind and do not break the week streak, and there is no reminder.
+- **Skip** a session or **repeat** a week from the Plan tab (open a week). Both can be undone.
+- Optional **race date**: weeks and sessions left, and a warning when the open sessions no longer fit before race day.
+- **Training days**: reminders and Next up only suggest runs on those weekdays; the long run goes to the weekend training day.
+- **Week streak** (both modes): consecutive Monday to Sunday weeks with at least your weekly target of runs (default 3, editable); paused weeks are skipped.
+- You can switch back to Fixed weeks at any time, nothing you logged changes; the screen previews what changes before you confirm.
+  Each person chooses for themselves, the other person's plan is read-only. Settings, skips, repeats and pauses are kept when switching.
+  Training days, skips, repeats and pauses (except for the week streak) only take effect in Flexible mode.
 
 ## How push works, and its limits
 
@@ -128,7 +150,7 @@ e.g. iOS standalone) can fail on a hosting domain different from the Firebase `a
 ## Tests
 
 ```sh
-npm test                 # app logic, 78 tests (node --test tests/)
+npm test                 # app logic, ~350 tests (node --test tests/), incl. the flexible plan engine and golden tests for fixed weeks
 cd worker && npm test    # Worker: token verification, handler, Web Push crypto
 ```
 

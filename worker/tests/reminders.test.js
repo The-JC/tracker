@@ -235,6 +235,34 @@ test('an absent, junk or unreadable plans node behaves exactly like today (setti
   }
 });
 
+test('rolling plan state: a reminder only goes out on a training day, from the session queue', async () => {
+  // NOW is Tuesday 2026-03-03
+  const onDay = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans: { a: { mode: 'rolling', trainingDays: [2, 4, 6] } } });
+  assert.deepEqual(await run(onDay), [{ person: 'a', status: 'sent', sent: 1, removed: 0 }]);
+  const offDay = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans: { a: { mode: 'rolling', trainingDays: [1, 3, 5] } } });
+  assert.deepEqual(await run(offDay), [{ person: 'a', status: 'skipped', why: 'rest' }]);
+  assert.equal(offDay.pushes().length, 0);
+  assert.equal(offDay.db.settings.reminders.a.lastSentDate, TODAY);
+});
+
+test('rolling plan state: a paused day sends nothing, the day after the pause sends; trainingDays are ignored in fixed (calendar) mode', async () => {
+  const paused = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans: { a: { mode: 'rolling', pauses: [{ from: '2026-03-02', to: '2026-03-03', note: 'flu' }] } } });
+  assert.deepEqual(await run(paused), [{ person: 'a', status: 'skipped', why: 'rest' }]);
+  assert.equal(paused.pushes().length, 0);
+  const after = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans: { a: { mode: 'rolling', pauses: [{ from: '2026-02-20', to: '2026-03-02' }] } } });
+  assert.equal((await run(after))[0].status, 'sent');
+  // calendar mode (default) with training days that exclude today: unchanged behaviour, still sends
+  const cal = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans: { a: { trainingDays: [1, 3, 5] } } });
+  assert.equal((await run(cal))[0].status, 'sent');
+});
+
+test('rolling plan state: behind plan (nothing logged for weeks) still only sends on training days, and only reads plans (no write to plans)', async () => {
+  const plans = { a: { mode: 'rolling', startDate: '2026-01-05', trainingDays: [2] } }; // today (Tue) is a training day, 8 weeks behind
+  const w = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, plans });
+  assert.equal((await run(w))[0].status, 'sent');
+  assert.ok(w.calls.every(c => c.method === 'GET' || c.url.pathname.startsWith('/trailhead-tracker-v1/settings/reminders/') || c.url.host !== 'db.example.test'), 'no DB write outside settings/reminders');
+});
+
 test('rest recommendation (ran yesterday three days in a row) is skipped and claimed', async () => {
   const log = {
     l1: { person: 'a', sport: 'run', runType: 'easy', km: 5, date: '2026-03-02', ts: 1 },

@@ -6,7 +6,8 @@
 // user-facing message on invalid input. Fields are validated up front with validateActivityInput so errors sit next to
 // the field; whatever addActivity still throws (offline, permissions...) is shown in a banner.
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate, planStates } from '../store.js';
+import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate, planStates, rollingViews } from '../store.js';
+import { suggestSession, sessionLabel } from '../rolling.js';
 import {
   validateActivityInput, defaultTitle, pointsFor, paceMinPerKm, formatPace, formatKm, formatDateLong
 } from '../scoring.js';
@@ -19,7 +20,7 @@ import { takeLogPrefill } from '../logPrefill.js';
 const props = defineProps({ open: { type: Boolean, default: false }, entry: { type: Object, default: null } });
 const emit = defineEmits(['close']);
 
-const blank = sport => ({ sport, runType: 'easy', date: today.value, km: '', durationMin: '', title: '', note: '' });
+const blank = sport => ({ sport, runType: 'easy', date: today.value, km: '', durationMin: '', title: '', note: '', session: '' });
 const form = ref(blank('run'));
 const photo = ref(null);        // compressed data URL
 const photoBusy = ref(false);
@@ -88,6 +89,35 @@ const weekInfo = computed(() => {
   return { n, inPlan: n >= 1 && n <= PLAN.length, movesStart, start };
 });
 
+/* ---------- flexible plan: which session this run counts for ---------- */
+
+// Only for runs of a person in flexible mode; calendar mode keeps the plain "Counts for Week N" chip above.
+const flexView = computed(() => (store.me && form.value.sport === 'run' ? rollingViews.value[store.me] : null));
+const kmNumber = computed(() => { const n = parseFloat(String(form.value.km).replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; });
+const suggestion = computed(() => {
+  const v = flexView.value;
+  if (!v) return null;
+  return suggestSession({
+    person: store.me,
+    draft: { runType: form.value.runType, km: kmNumber.value, date: form.value.date || today.value, id: isEdit.value ? props.entry.id : undefined, session: form.value.session || undefined },
+    sessions: v.sessions, match: v.match, entries: store.log.filter(e => e.person === store.me), personState: v.state, todayISO: today.value
+  });
+});
+// The next ~8 sessions a run can still be pinned to: not skipped, not held by another run (the edited run's own one stays).
+const sessionOptions = computed(() => {
+  const v = flexView.value;
+  if (!v) return [];
+  const own = isEdit.value ? props.entry.id : null;
+  const free = v.sessions.filter(s => !s.skipped && (!v.match.bySession[s.id] || v.match.bySession[s.id].entryId === own));
+  const list = free.slice(0, 8);
+  const pinned = form.value.session && v.sessions.find(s => s.id === form.value.session);
+  if (pinned && !list.some(s => s.id === pinned.id) && !pinned.skipped) list.push(pinned);
+  return list.map(s => ({ id: s.id, text: `${sessionLabel(s)}${s.km > 0 ? ` · ${s.km} km` : ''}` }));
+});
+const changing = ref(false);
+watch(() => props.open, o => { if (!o) changing.value = false; });
+watch(() => form.value.sport, () => { changing.value = false; });
+
 /* ---------- open / close: scroll lock, focus, Escape ---------- */
 
 let returnFocus = null;
@@ -124,7 +154,7 @@ function startEdit() {
 }
 
 function setSport(key) {
-  form.value = isEdit.value ? changeSport(form.value, key) : { ...form.value, sport: key };
+  form.value = isEdit.value ? changeSport(form.value, key) : { ...form.value, sport: key, ...(key === 'run' ? {} : { session: '' }) };
 }
 
 watch(() => props.open, async o => {
@@ -291,13 +321,29 @@ async function save() {
             </div>
           </div>
 
-          <div v-if="weekInfo" class="row row--wrap">
+          <div v-if="flexView" class="field" data-testid="session-chip">
+            <div class="row row--wrap">
+              <span class="chip chip--info">{{ suggestion ? `Counts for: ${suggestion.label}` : 'Free run: counts for points, not for a session' }}</span>
+              <button type="button" class="btn btn--ghost btn--sm" :aria-expanded="changing" aria-controls="log-session" @click="changing = !changing">{{ changing ? 'Done' : 'Change' }}</button>
+            </div>
+            <div v-if="changing" class="stack stack--sm">
+              <label class="field__label" for="log-session">Count this run for</label>
+              <select id="log-session" v-model="form.session" class="select">
+                <option value="">Automatic{{ !form.session && suggestion ? `: ${suggestion.label}` : '' }}</option>
+                <option v-for="o in sessionOptions" :key="o.id" :value="o.id">{{ o.text }}</option>
+                <option value="free">Free run (no session)</option>
+              </select>
+              <p class="field__hint">Automatic matches the run to the first open session of its type. Pick another session to pin it there, or choose Free run to keep it out of the plan (it still counts for points).</p>
+            </div>
+            <p v-if="suggestion && suggestion.alreadyMatched && form.session && form.session !== 'free'" class="field__hint">Another run already counts for this session, so this one stays a free run.</p>
+          </div>
+          <div v-else-if="weekInfo" class="row row--wrap">
             <span v-if="weekInfo.inPlan" class="chip chip--info">{{ form.sport === 'run' ? 'Counts for' : 'Logged in' }} Week {{ weekInfo.n }}</span>
             <span v-else class="chip chip--info">{{ weekInfo.n < 1 ? 'Before the plan start' : 'After the plan' }}: saved, counts for points{{ form.sport === 'run' ? ', not for a plan week' : '' }}</span>
           </div>
           <p v-if="weekInfo && weekInfo.movesStart" class="field__hint">
             This is earlier than your plan start, so Week 1 moves back to {{ formatDateLong(weekInfo.start) }} and every week shifts.
-            To keep the plan where it is, set the plan start date in Settings first.
+            To keep the plan where it is, set your start date under Settings, My plan first.
           </p>
 
           <div class="field">

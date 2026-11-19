@@ -1,9 +1,9 @@
 <script setup>
-// SettingsSheet: signed-in account, display names, plan start date, system alerts, daily run reminder, sign out, app version.
-// Props: open (boolean). Emits: 'close'. Lazy-loaded by App.vue via defineAsyncComponent.
+// SettingsSheet: signed-in account, display names, link to My plan (PlanSettings.vue), system alerts, daily run reminder, sign out, app version.
+// Props: open (boolean). Emits: 'close', 'plan-settings' (open the My plan sheet). Lazy-loaded by App.vue via defineAsyncComponent.
 // Identity is the signed-in Google account (store.me, store.user) and cannot be changed here.
 import { ref, computed, watch, onBeforeUnmount } from 'vue';
-import { store, effectiveStartDate, setName, setStartDate, setReminder, signOut, sendTestNotification } from '../store.js';
+import { store, effectiveStartDate, planStates, setName, setReminder, signOut, sendTestNotification } from '../store.js';
 import { PUSH_URL } from '../firebaseConfig.js';
 import { formatDateLong } from '../scoring.js';
 import { version } from '../../package.json';
@@ -13,7 +13,7 @@ import AlertsBanner from './AlertsBanner.vue';
 import { updateAvailable, checkingUpdate, lastCheckResult, checkForUpdate, reloadApp, APP_BUILD } from '../utils/useUpdateCheck.js';
 
 const props = defineProps({ open: { type: Boolean, default: false } });
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'plan-settings']);
 
 const panel = ref(null);
 const error = ref('');
@@ -23,6 +23,7 @@ useSheet(() => props.open, panel, close);
 
 const meName = computed(() => (store.me ? store.names[store.me] : ''));
 const hasManualStart = computed(() => !!store.settings.startDate);
+const ownStart = computed(() => !!(store.me && planStates.value[store.me].startDate));
 
 // Test notifications: the local demo backend stays enabled (shows "Local mode: no real push"); Firebase needs the Worker URL.
 const otherName = computed(() => store.names[store.me === 'a' ? 'b' : 'a'] || 'the other person');
@@ -94,14 +95,6 @@ async function saveName(p, ev) {
   try { await setName(p, ev.target.value); } catch (e) { error.value = e.message || "Couldn't save the name."; }
   ev.target.value = store.names[p]; // reflect trimming / fallback to the default
 }
-async function saveStart(ev) {
-  error.value = '';
-  try { await setStartDate(ev.target.value || null); } catch (e) { error.value = e.message || 'Invalid date.'; }
-}
-async function resetStart() {
-  error.value = '';
-  try { await setStartDate(null); } catch (e) { error.value = e.message || "Couldn't reset the date."; }
-}
 async function logOut() {
   close();
   await signOut();
@@ -148,17 +141,13 @@ async function logOut() {
             <p class="field__hint text-sm text-muted">Shown on both phones. Leave empty to restore the default.</p>
           </section>
 
-          <section class="stack stack--sm" aria-labelledby="settings-start">
-            <h3 id="settings-start" class="text-eyebrow">Plan start date</h3>
-            <div class="field">
-              <label class="field__label" for="start-date">Week 1 starts on</label>
-              <input id="start-date" class="input" type="date" :value="store.settings.startDate || ''" @change="saveStart">
-              <p class="field__hint text-sm text-muted">
-                Currently <strong class="text-strong">{{ formatDateLong(effectiveStartDate) }}</strong>
-                <template v-if="!hasManualStart"> (automatic: the Monday of the first logged run's week)</template>.
-              </p>
-            </div>
-            <div v-if="hasManualStart"><button type="button" class="btn btn--secondary btn--sm" @click="resetStart">Reset to automatic</button></div>
+          <section class="stack stack--sm" aria-labelledby="settings-plan">
+            <h3 id="settings-plan" class="text-eyebrow">My plan</h3>
+            <p class="text-sm text-muted">
+              Week 1 starts on <strong class="text-strong">{{ formatDateLong(effectiveStartDate) }}</strong><template v-if="!ownStart && !hasManualStart"> (automatic)</template>.
+              Start date, race date, weekly target, training days, pauses and the plan mode are all per person.
+            </p>
+            <button type="button" class="btn btn--secondary btn--block" @click="emit('plan-settings')">Open my plan settings</button>
           </section>
 
           <section class="stack stack--sm" aria-labelledby="settings-alerts">

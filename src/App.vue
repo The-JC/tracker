@@ -18,6 +18,7 @@ const PlanView = defineAsyncComponent(() => import('./components/PlanView.vue'))
 const StatsView = defineAsyncComponent(() => import('./components/StatsView.vue'));
 const NotesView = defineAsyncComponent(() => import('./components/NotesView.vue'));
 const SettingsSheet = defineAsyncComponent(() => import('./components/SettingsSheet.vue'));
+const PlanSettings = defineAsyncComponent(() => import('./components/PlanSettings.vue'));
 
 // Left of the record button: feed, plan. Right of it: stats, notes.
 const TABS = [
@@ -39,6 +40,16 @@ const logOpen = ref(false);
 const settingsOpen = ref(false);
 const settingsLoaded = ref(false); // mount the lazy sheet on first open, then keep it so it can animate out
 const openSettings = () => { settingsLoaded.value = true; settingsOpen.value = true; };
+// "My plan" (lazy sheet): from Settings and from the Plan tab; `section` scrolls to a part of it ('pauses', 'mode', ...).
+const planOpen = ref(false);
+const planLoaded = ref(false);
+const planSection = ref('');
+const openPlanSettings = (section = '') => {
+  settingsOpen.value = false;
+  planSection.value = typeof section === 'string' ? section : '';
+  planLoaded.value = true;
+  planOpen.value = true;
+};
 
 const meName = computed(() => (store.me ? store.names[store.me] : ''));
 const meInitial = computed(() => (meName.value ? meName.value.charAt(0).toUpperCase() : '?'));
@@ -114,7 +125,7 @@ watch([tab, () => store.notes.length], () => { if (tab.value === 'notes') markNo
       <NextRunCard v-if="tab === 'feed'" @log="logOpen = true" />
       <Scoreboard v-if="tab === 'feed'" />
       <KeepAlive>
-        <component :is="view" @log="logOpen = true" />
+        <component :is="view" @log="logOpen = true" @plan-settings="openPlanSettings" />
       </KeepAlive>
     </main>
 
@@ -136,7 +147,8 @@ watch([tab, () => store.notes.length], () => { if (tab.value === 'notes') markNo
     </nav>
 
     <LogActivitySheet :open="logOpen" @close="logOpen = false" />
-    <SettingsSheet v-if="settingsLoaded" :open="settingsOpen" @close="settingsOpen = false" />
+    <SettingsSheet v-if="settingsLoaded" :open="settingsOpen" @close="settingsOpen = false" @plan-settings="openPlanSettings" />
+    <PlanSettings v-if="planLoaded" :open="planOpen" :section="planSection" @close="planOpen = false" />
   </template>
   <ToastHost />
 </template>

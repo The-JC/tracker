@@ -1,6 +1,6 @@
 # Making the app less dependent on the fixed schedule
 
-Status: proposal, nothing built yet. Decisions needed are in section 6.
+Status: phases 1 to 3 built (sections 8 to 10); phase 4 (smarter next-up/reminders) is partly in (queue-based next-up, training days, pauses, race feasibility); phase 5 deferred. Sections 1 to 6 are the original proposal.
 
 ## 1. Where the app is tied to the schedule today
 
@@ -126,4 +126,74 @@ Week streak, as implemented (§7 plus): weeks are Monday-Sunday; the week contai
 * Store: `store.plans`, `planStates`, `effectiveStartForPerson(person)`, `effectiveStartDate` (signed-in person), `weeks` (per-person), `weekWindows`, `weekStreaks`, `setPlanState(person, patch)`; see REBUILD_PLAN §6.
 * `viewmodels.thisWeekSummary(weeks, stats, windows?)` uses each person's own current plan week when `windows` is given; `weekStreakText`, `thisWeekRunsText`.
 
-Notes for phases 2 and 3: rolling mode is stored (`mode`) but nothing reads it yet. A person's weeks in `weeks[i].a/.b` are per person, the top-level date fields are not: read per-person dates from `weekWindows`. The Plan tab detail still shows the signed-in person's dates in its header.
+Notes for phases 2 and 3 (historical: from phase 2 on, `mode: 'rolling'` is read everywhere, see §9): A person's weeks in `weeks[i].a/.b` are per person, the top-level date fields are not: read per-person dates from `weekWindows`. The Plan tab detail still shows the signed-in person's dates in its header.
+
+## 9. Phase 2 API (implemented: rolling engine)
+
+Phase 2 makes `mode: 'rolling'` real. Calendar mode is untouched (same code path, golden tests unchanged); a person is rolling when their own plan state says so, so one person can be rolling while the other stays on the calendar. Everything is pure and shared by app, Worker and tests. `src/rolling.js` and `src/planModel.js` import each other but only use the other's exports inside functions, so the cycle is harmless (the Worker still bundles; no Vue/DOM imports).
+
+### New stored fields
+* `plans/<p>/repeatWeeks: number[]`: plan weeks (1..plan length) that are done once more right after the original week. `normalizePersonState` sorts, dedupes and drops invalid values (default `[]`); `validatePlanPatch` accepts it (strict, `null` clears); `DEFAULT_PLAN_STATE.repeatWeeks = []`; `PLAN_FIELDS` includes it.
+* `log/<id>/session: string` (optional): the plan session a run is pinned to (a session id, see below). Added by the log form / edit; the engine ignores it when the session does not exist, is skipped, or is already pinned by an earlier run.
+
+### Sessions (`src/rolling.js`)
+`buildSessions(plan, goals, personState, person = 'a')` (also `buildSessions({ plan, goals, state, person })`; `personState` may be one person's state, `{a,b}` together with `person`, or the raw node) returns the ordered queue
+`[{ id, week, index, runId, runType, type, detail, km, mult, optional, skipped, repeat }]`:
+* `id` is the plan run id (`'1-7-1-a'`); the second pass of a repeated week appends `~r2` (`'1-7-1-a~r2'`) and comes right after the original week. `runId` is always the original run id; goals (km overrides) are keyed by it.
+* `km` is the effective goal; `optional` = `km <= 0` (race-week shakeout). `index` is the position in the returned list (skipped sessions included, so it is stable).
+* `skipped`: `state.skipped` holds run ids or `w<week>-<runType>` aliases (repeat pass: `...~r2`). Skipped sessions stay in the list (so the UI can show them) but are never matched, open or counted: every consumer filters them.
+* `sessionLabel(session)` -> `'Tempo · Week 7'` (`'... (repeat)'`).
+
+### Matching
+`matchRuns({ sessions, entries, personState, todayISO, lookahead = 6, startDate?, person? })` -> `{ bySession: { [sessionId]: { entryId, km, partial } }, byEntry: { [entryId]: { sessionId, week, partial, pinned } }, free: [entryId], firstOpenIndex, doneCount, partialCount, openCount, totalCount, behind, lookahead }`. Plain objects (serialisable). Only the person's runs (`sport 'run'`, `km > 0`) count; with `person` other people's entries are dropped.
+Rules, in this order (each run takes at most one session, each session at most one run; ties by `(date, ts, id)`, so the result does not depend on the order of `entries`):
+1. **Pins**: `entry.session` names an existing, non-skipped, still free session.
+2. **Week overrides** (`entry.week`, i.e. undated imports): the first free session of that plan week with the same run type, else the free session of that week with the closest km, else free.
+3. **Dated runs**, oldest first: a run with a known run type takes the **earliest free session of the same run type among the next `lookahead` free sessions**; a run with no/unknown run type takes the one among them with the closest km. Nothing fits: the run stays free (`free`; it still earns points).
+A run is **done** for its session at `>= DONE_THRESHOLD` (0.9, shared with `recommend.js`) of its km, a shorter run is **partial**: it still consumes the session (the queue moves on) but is flagged. Optional sessions are never partial. `firstOpenIndex` = index in `sessions` of the first unmatched, non-optional, non-skipped session (-1: none); `doneCount` = matched non-partial, `partialCount`, `openCount` = unmatched, `totalCount` = non-skipped non-optional sessions. `behind` = `behindSessions(...)` when a start date is known (argument, else `personState.startDate/fallbackStartDate`), else 0.
+Editing/deleting a run just re-runs the matching: runs before it in `(date, ts, id)` order keep their sessions; editing only the km of a typed run changes only that session's `partial` flag.
+Helpers: `nextOpenSession(sessions, match)`, `explainMatch(entryId, match, sessions)` -> `'Counts for Tempo, Week 7'` (`' (partly)'`, `' (repeat)'`) or `'Free run'`, `suggestSession({ person, draft: { runType, km, date, id?, session? }, sessions, match, entries?, personState?, todayISO?, lookahead? })` -> `{ sessionId, week, label: 'Tempo · Week 7', alreadyMatched?: true } | null`. With `entries` (the person's activities) it re-runs the matching with the draft added (exact for any date; `draft.id` = the entry being edited, which is replaced); without them the draft is treated as the newest run and takes the free sessions left in `match`. `draft.session` (explicit pin) returns that session, `alreadyMatched` true when another run holds it (the pin would be ignored); `alreadyMatched` is also true when the edited run is already matched to the suggested session. A skipped/unknown pinned session gives `null`.
+
+### Pace: `behindSessions`
+`sessionsDue({ sessions, personState, startDate, todayISO })` -> `{ due, total, basis: 'race' | 'calendar' | 'none' }` and `behindSessions({ sessions, match, personState, startDate, todayISO })` = `max(0, due - (doneCount + partialCount))`. `total` = non-skipped, non-optional sessions. Pace:
+* **With a race date after the start**: the `total` sessions are spread evenly over the not-paused days from the start to the race date: `sessionsPerDay = total / availableDays` (`availableDays` = days in `[start, race)` minus paused days); `due = floor(total * elapsed / availableDays)` where `elapsed` counts the not-paused days strictly before today (capped at the race). The race session is never due before the race date (`due <= total - 1` until then); after it everything is due.
+* **Without a race date** (or a race date on/before the start): the plan's own calendar. Plan week `n` starts `start + 7 (n - 1)`; all sessions of a week are due once that week has completely passed, and **paused days do not count as elapsed**, so a pause shifts every later week. `blocks = floor(elapsedNotPausedDays / 7)` and the first `blocks` week groups are due; a repeated week is one more group (its repeat pass), a week with all sessions skipped still takes its calendar week.
+* Before the start, with no start date, or nothing planned: 0. Dates are compared as calendar days (UTC based), so DST changes never matter.
+`raceFeasibility({ sessions, match, personState, todayISO, ranToday? })` -> `{ daysLeft, sessionsLeft, slots, fits, shortBy, raceDate } | null` (null without a valid race date): `sessionsLeft` = open non-optional sessions (race included); `slots` = training days from today (tomorrow if `ranToday`) before the race that are not paused (`trainingDays` weekdays when set, else `floor(days * 3 / 7)`), plus one for the race day itself; `fits = slots >= sessionsLeft`, `shortBy = max(0, sessionsLeft - slots)`; a past race date gives `daysLeft 0`, no slots.
+
+### Rolling week view: `buildWeeksFor`
+For a person in rolling mode `buildWeeksFor` replaces that person's `a`/`b` values by `rollingWeeksFor({ plan, goals, log, person, state, startDate, todayISO })` -> `{ weeks, currentIndex, sessions, match, behindSessions, nextSession }`; `rollingStateFor(...)` -> `{ sessions, match, state, startDate }` gives just the queue. Per plan week the person value has the Phase-1 shape plus extras:
+`{ plannedKm, doneKm, pct, status, runs, entries, behindSessions, sessionsDone, sessionsTotal, partialCount, repeated }`
+* `runs`: one per session of that week (a repeated week lists its repeat pass too, ids with `~r2`): `{ id, runId, type, runType, detail, mult, km, defaultKm, skipped, repeat, matched: { entryId, km, partial } | null }`.
+* `plannedKm` = km of the sessions that are not skipped (repeat pass included); `doneKm` = km of the runs matched to them; `entries` = those runs' activities (free runs belong to no week).
+* `status`: `'fulfilled'` when every non-optional, non-skipped session of the week is matched (partial counts as matched), `'current'` for the week holding the first open session, `'upcoming'` otherwise, `'n/a'` when nothing is planned (e.g. everything skipped). **Never `'missed'`.** `pct` is 100 for a fulfilled week without partial runs, else `min(99, round(100 * doneKm / plannedKm))`, null when nothing is planned.
+* `behindSessions` is the person's value (same on every week); `sessionsDone`/`sessionsTotal` count matched / required sessions of the week.
+* Top-level `n/kind/tag/startDate/endDate` follow the viewer's calendar as in Phase 1; top-level `current` follows the **viewer's queue** (the week of their first open session) when the viewer is rolling, their calendar week otherwise. `weekWindowsFor` stays calendar for everyone. Scoreboard, week streak (calendar based, pauses respected) and the other consumers keep working unchanged.
+
+### Next up from the queue
+`recommendNext` / `recommendForPerson` use the queue when `planState.mode === 'rolling'` (calendar results are identical, proven by consistency tests). The candidate pool is the open sessions of the week group (plan week + repeat pass) holding the first open session. All existing rules apply (no hard after hard/long, recovery easy, quality days, weekend long run, ease back in, rest after a run today / three run days in a row, race eve/day) with these changes:
+* `summary` / `weekNumber` / `plannedLeft` describe that group and the queue (`plannedLeft` = all open sessions); `daysLeftInWeek` = days left in the calendar week. Extra result field `rolling: { behindSessions, openCount, doneCount, totalCount, nextSessionId }` (absent in calendar mode).
+* **Training days** are preferences: when set and today is not one, `kind: 'rest'`, `run` = the best session on the next training day, `forDate` = that day, tag `Rest day`. The long run goes to the weekend training day(s) (else the last training day of the week); quality prefers training days Tue-Thu (else any training day that is not a long-run day). Unset: today's constants (Sat/Sun long, Tue-Thu quality).
+* **Behind**: when `behindSessions >= 2` the reason says so ("You are N sessions behind plan pace...") and the tag `Behind` is added to `run`/`rest` results (not on race eve/day). Catch-up ordering (most valuable safe run first) applies while behind, except after a long break where the ease-back rule keeps priority.
+* **Race**: with a race date within 7 days and the race session open, the race-week rules run on that date; farther away the race is left out of the pool (only the race left: `rest` with tag `Race ahead`, next up on the race date). Without a race date, a race session that is the only one open is recommended as `run` with tag `Race day`.
+* **Race feasibility**: when a race date is set the result carries `raceFeasibility` (`raceFeasibility()` above).
+* Queue exhausted: `kind: 'done'`, tag `Plan complete`; before the start: `'not-started'` as before. Reminders (Worker) go out only for `kind: 'run'`, so non-training days send nothing.
+
+### Pure plan operations (patches for `setPlanState`; never mutate; invalid input throws an `Error` with a user-facing message)
+`skipSessionPatch(state, sessionId)` -> `{ skipped }` (id or `w7-tempo` alias, idempotent), `unskipSessionPatch(state, sessionId)` (removes the id and its alias), `repeatWeekPatch(state, week)` / `unrepeatWeekPatch(state, week)` -> `{ repeatWeeks }`, `addPausePatch(state, { from, to, note? })` -> `{ pauses }` (merged, sorted), `removePausePatch(state, index)`. `state` = one person's plan state (store passes `store.plans[me]`).
+`previewModeSwitch({ plan, goals, log, state, todayISO, person = 'a' })` -> `{ calendar: { currentWeek, fulfilledWeeks, behind }, rolling: { currentWeek, fulfilledWeeks, nextSession } }`: both modes are always evaluated whatever `state.mode` is; `calendar.behind` = weeks already missed under the calendar rules; `rolling.nextSession` = first open session or null; `currentWeek` = plan week number or null.
+
+### Notes
+* Free runs (matched to nothing) still count for points, streaks and totals; `week` events in rolling mode follow the week of the session (UI: `entryPatch.rollingNewlyFulfilledWeek`).
+* Partial counts as matched for week status and pace but not as done (`doneCount`, `pct`).
+* Tests: `tests/rolling.test.mjs` (sessions, matching incl. seeded property tests, pace incl. DST and pauses, week view, patches, suggestion), `tests/recommendRolling.test.mjs` (18 next-up scenarios, calendar consistency), `worker/tests/reminders.test.js`.
+
+## 10. Phase 3 and QA notes (final behaviour)
+
+* **UI**: Settings, **My plan** (`PlanSettings.vue`): mode (with a preview of what changes), start date, race date (must be after the start), weekly target, training days, pauses (quick "pause until" and a range with a note, notes are rendered as text), skipped/repeated list. The Plan tab header shows weeks/sessions left, "behind by N sessions" and a "Pause my plan" shortcut; an open week offers "Skip this session" and "Repeat this week" (own runs, flexible mode only). A one-time banner (per device) offers the flexible plan to people on fixed weeks. Settings only links to My plan (the start date moved there).
+* **Free run pin**: `log/<id>/session = 'free'` means "never match this run to a session"; the log form's select has "Free run (no session)". The engine leaves such runs in `free` (they still earn points, streaks and totals); `scoring.cleanSessionId` accepts it; `scoring.sessionPinAllowed(session, person)` is the cross-person guard (a person may pin only to their own plan's session ids or `'free'`; the store and `entryPatch.prepareEdit` drop foreign pins).
+* **Week events**: in flexible mode the 'week fulfilled' event follows the plan week of the session (`rollingNewlyFulfilledWeek`, evaluated for any sport on edit because removing a run can re-shuffle the matches). `addActivity` and `updateActivity` both skip the event when the person already has one for that week (`hasWeekEvent`), so delete-and-relog does not duplicate it. Edits that do not newly fulfil a week emit nothing.
+* **Pauses and Next up**: in flexible mode a day inside a pause gives `kind: 'rest'`, tags `Paused`/`Rest day`, `forDate` = the day after the pause, so no reminder is sent. Fixed (calendar) mode ignores pauses there (only the week streak and the pace in flexible mode use them).
+* **Mode switching** never rewrites logs: calendar and flexible are two views of the same log. `plans/<p>` keeps skips, repeats, pauses, race date and training days when you switch back.
+* **Cross-person boundary**: `setPlanState` and all plan actions throw unless `person === store.me`. The database rules (template, untouched) still allow both accounts to write the whole root, so this is enforced by the client only; the Worker never writes `plans`.
+* **Tests**: `tests/flexibleQa.test.mjs` (free pin, pins across persons, matching edge cases, week events, DST 2026-03-29 and 2026-10-25, pauses across week borders, race date today/past/before start, streak with pauses in both modes, pause in Next up) and two more cases in `worker/tests/reminders.test.js`.

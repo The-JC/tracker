@@ -2,12 +2,13 @@
 // validating it exactly like a new entry, and detecting that an edit made a plan week newly fulfilled.
 // Used by store.updateActivity and LogActivitySheet (edit mode); node-tested in tests/entryPatch.test.mjs.
 import { PLAN as DEFAULT_PLAN } from '../plan.js';
-import { validateActivityInput, defaultTitle, isValidISODate } from '../scoring.js';
-import { normalizePlanState, buildWeeksFor, weekOfEntryFor } from '../planModel.js';
+import { validateActivityInput, defaultTitle, isValidISODate, sessionPinAllowed } from '../scoring.js';
+import { normalizePlanState, buildWeeksFor, weekOfEntryFor, effectiveStartFor } from '../planModel.js';
+import { rollingWeeksFor } from '../rolling.js';
 import { weekEventText } from '../notifications.js';
 
 // Fields a user may change. person, id, ts, kudos, imported are never part of a patch.
-export const EDITABLE_FIELDS = ['sport', 'runType', 'title', 'date', 'km', 'durationMin', 'note'];
+export const EDITABLE_FIELDS = ['sport', 'runType', 'title', 'date', 'km', 'durationMin', 'note', 'session'];
 export const FUTURE_DATE_ERROR = 'That date is in the future. Pick today or earlier.';
 
 const KM_SPORTS = new Set(['run', 'hike']);
@@ -25,7 +26,8 @@ export function formFromEntry(entry) {
     km: e.km == null ? '' : String(e.km),
     durationMin: e.durationMin == null ? '' : String(e.durationMin),
     title: e.title || '',
-    note: e.note || ''
+    note: e.note || '',
+    session: e.session || ''   // flexible plan: the plan session this run is pinned to ('' = let the plan match it)
   };
 }
 
@@ -41,7 +43,7 @@ export function isAutoTitle(title, sport) {
 export function changeSport(form, sport) {
   if (form.sport === sport) return form;
   const next = { ...form, sport };
-  if (sport !== 'run') next.runType = 'easy';
+  if (sport !== 'run') { next.runType = 'easy'; next.session = ''; }
   if (!KM_SPORTS.has(sport)) next.km = '';
   if (isAutoTitle(form.title, form.sport)) next.title = '';
   return next;
@@ -71,6 +73,8 @@ export function prepareEdit(entry, input, { today, now = new Date() } = {}) {
   const checked = validateActivityInput(keepUndated ? { ...input, date: PLACEHOLDER_DATE } : input, now);
   if (!checked.ok) return checked;
   const value = { ...checked.value };
+  // A session pin only makes sense inside the owner's own plan (their run ids end in -a / -b).
+  if (value.session && !sessionPinAllowed(value.session, entry.person)) delete value.session;
   if (keepUndated) delete value.date;
   else if (today && isValidISODate(value.date) && value.date > today) return fail(FUTURE_DATE_ERROR);
 
@@ -130,4 +134,22 @@ export function newlyFulfilledWeek({ entry, next, log, goals = {}, settingsStart
 export function hasWeekEvent(events, person, n) {
   const tail = weekEventText('', n);
   return (events || []).some(ev => ev.kind === 'week' && ev.actor === person && String(ev.text || '').endsWith(tail));
+}
+
+/* ---------- flexible plan: week newly fulfilled ---------- */
+
+// In a flexible plan a run completes the week its SESSION belongs to, not the week its date falls in. -> the lowest plan week of
+// `person` that is fulfilled in `afterLog` but was not in `beforeLog`, or null; `undefined` when the person is not in flexible mode
+// (the caller then uses weekFulfillment / newlyFulfilledWeek as before).
+export function rollingNewlyFulfilledWeek({ beforeLog, afterLog, person, goals = {}, settingsStartDate = null, planState = null, today, plan = DEFAULT_PLAN }) {
+  const state = normalizePlanState(planState, { settingsStartDate });
+  if (!state[person] || state[person].mode !== 'rolling') return undefined;
+  const fulfilled = log => {
+    const startDate = effectiveStartFor(person, state, log, today);
+    const view = rollingWeeksFor({ plan, goals, log, person, state: state[person], startDate, todayISO: today });
+    return new Set(view.weeks.map((w, i) => (w.status === 'fulfilled' ? plan[i].n : null)).filter(n => n !== null));
+  };
+  const before = fulfilled(beforeLog || []);
+  for (const n of [...fulfilled(afterLog || [])].sort((x, y) => x - y)) if (!before.has(n)) return n;
+  return null;
 }

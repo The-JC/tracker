@@ -38,7 +38,7 @@ trailhead-tracker-v1/
   nameA, nameB                      legacy, still read/written for names
   goals/{runId}: "5.5"              plan-km overrides (legacy format, kept)
   settings/{startDate, migratedV1}
-  plans/{a|b}: PlanState               per-person plan state (flexible plan, phase 1): { mode?, startDate?, raceDate?, pauses?, skipped?, trainingDays?, weeklyTarget? }, see docs/FLEXIBLE_PLAN.md §8. Absent node = defaults (calendar mode, start from settings/startDate). Each person writes only their own node; the Worker reads both.
+  plans/{a|b}: PlanState               per-person plan state (flexible plan, phases 1-2): { mode?, startDate?, raceDate?, pauses?, skipped?, repeatWeeks?, trainingDays?, weeklyTarget? }, see docs/FLEXIBLE_PLAN.md §8 and §9 (repeatWeeks: number[] = plan weeks done once more in rolling mode). Absent node = defaults (calendar mode, start from settings/startDate). Each person writes only their own node; the Worker reads both.
   settings/reminders/{a|b}: { enabled, time:'HH:MM', tz, lastSentDate:'YYYY-MM-DD'|null, updatedTs }   daily run reminder (see below)
   log/{id}: ActivityEntry
   photos/{id}: "data:image/jpeg;base64,…"
@@ -58,6 +58,7 @@ ActivityEntry = {
   km?: number, durationMin?: number,
   note?: string,
   week?: number,                    // explicit plan-week override
+  session?: string,                 // flexible plan (rolling mode): run pinned to a plan session id ('1-7-1-a', '1-7-1-a~r2' = repeat pass) or 'free' (never counts for a session; own plan's ids only); see FLEXIBLE_PLAN §9, §10
   hasPhoto: boolean,
   kudos?: { a?: true, b?: true },
   imported?: true,
@@ -131,7 +132,7 @@ export const unreadCount         // computed → events by the other person newe
 
 export function signInWithGoogle(localPerson?): Promise<void>;  export function signOut(): Promise<void>   // localPerson 'a'|'b' only used by the ?local=1 backend
 export function setName(p, name), setStartDate(iso|null) /* legacy global start = fallback for both people */, setGoal(runId, kmString)
-export function setPlanState(person, patch /* any of mode,startDate,raceDate,pauses,skipped,trainingDays,weeklyTarget; null clears */): Promise<PlanState>
+export function setPlanState(person, patch /* any of mode,startDate,raceDate,pauses,skipped,repeatWeeks,trainingDays,weeklyTarget; null clears */): Promise<PlanState>
   // own plan only (person === store.me, else throws); validated by planModel.validatePlanPatch (throws a user-facing message); only provided fields are written
   // (cleared fields are removed from plans/<person>); optimistic, offline-safe (settle)
 export function addActivity(input /* {sport,runType?,title?,date,km?,durationMin?,note?,photoDataUrl?} */): Promise<string>  // person = store.me; emits an 'activity' event, and a 'week' event when a week becomes fulfilled
@@ -147,6 +148,9 @@ export function setReminder({ enabled?, time? }): Promise<Reminder>
   // own settings/reminders/<me> only; time must be 'HH:MM' (00:00-23:59, else throws) and is rounded to 5 minutes; omitted fields keep their value;
   // stamps tz (device zone) + updatedTs, merges only those fields (never touches lastSentDate except: = today when an enabled time has already passed today);
   // optimistic, offline-safe (settle). The store also re-stamps tz silently on start/sign-in/foreground when the device zone changed and reminders are on.
+export function setPlanMode(mode), setRaceDate(iso|null), setTrainingDays(days), setWeeklyTarget(n|null), addPause({from,to,note?}), removePause(index),
+  skipSession(id), unskipSession(id), repeatWeek(n), unrepeatWeek(n)   // thin wrappers over setPlanState for the signed-in person's own plan (FLEXIBLE_PLAN §9, §10)
+export const rollingViews        // computed → { a, b } each { sessions, match, state, startDate } | null (null unless that person is in flexible mode)
 export function sendTestNotification(target: 'self'|'other'|'reminder'): Promise<void>   // result in store.testPush; 'reminder' = Worker POST /notify {"test":"reminder"}
 ```
 

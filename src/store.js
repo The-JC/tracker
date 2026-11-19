@@ -4,11 +4,15 @@
 import { reactive, computed, ref, watch } from 'vue';
 import { PLAN, PLAN_RUN_BY_ID } from './plan.js';
 import {
-  todayISO, isValidISODate, scoreboard as calcScoreboard, stats as calcStats, sortLog, validateActivityInput
+  todayISO, isValidISODate, scoreboard as calcScoreboard, stats as calcStats, sortLog, validateActivityInput, sessionPinAllowed
 } from './scoring.js';
 import {
   normalizePlanState, validatePlanPatch, effectiveStartFor, buildWeeksFor, weekWindowsFor, weekStreak
 } from './planModel.js';
+import { raceDateError, pauseError } from './utils/planSettingsForm.js';
+import {
+  rollingStateFor, skipSessionPatch, unskipSessionPatch, repeatWeekPatch, unrepeatWeekPatch, addPausePatch, removePausePatch
+} from './rolling.js';
 import { migrateLegacy } from './migration.js';
 import {
   activityEventText, weekEventText, kudosEventText, noteEventText, unreadEvents, freshEvents, nextLastRead,
@@ -22,7 +26,7 @@ import {
 } from './push.js';
 import { resolveUser } from './identity.js';
 import { settle } from './utils/settle.js';
-import { prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment } from './utils/entryPatch.js';
+import { prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment, rollingNewlyFulfilledWeek } from './utils/entryPatch.js';
 import { normalizeReminder, isValidTime, roundTime, deviceTimeZone, isValidTimeZone, buildReminderPatch } from './utils/reminderTime.js';
 
 const DEFAULT_NAMES = { a: PEOPLE.a.name, b: PEOPLE.b.name };
@@ -95,6 +99,11 @@ export const weekStreaks = computed(() => ({
   a: weekStreak({ log: store.log, person: 'a', state: planStates.value, plan: PLAN, goals: store.goals, todayISO: today.value }),
   b: weekStreak({ log: store.log, person: 'b', state: planStates.value, plan: PLAN, goals: store.goals, todayISO: today.value })
 }));
+// Flexible-plan view of each person who is in flexible mode: { a: { sessions, match, state, startDate } | null, b: ... }
+// (rolling.rollingStateFor). The log form suggests sessions from it and the feed cards say which session a run counts for.
+export const rollingViews = computed(() => Object.fromEntries(['a', 'b'].map(p => [p, planStates.value[p].mode === 'rolling'
+  ? rollingStateFor({ plan: PLAN, goals: store.goals, log: store.log, person: p, state: planStates.value[p], startDate: effectiveStartForPerson(p), todayISO: today.value })
+  : null])));
 export const scoreboard = computed(() => calcScoreboard(store.log, weeks.value, today.value));
 export const stats = computed(() => calcStats(store.log, today.value));
 export const unreadCount = computed(() => unreadEvents(store.events, store.me, store.lastReadTs).length);
@@ -324,6 +333,63 @@ export async function setPlanState(person, patch) {
   return store.plans[p];
 }
 
+/* ---- plan actions (thin wrappers over setPlanState; own plan only, offline-safe, user-facing error messages) ---- */
+
+// The signed-in person's stored plan state (without the fallback start), for building patches.
+const myPlan = () => (store.me ? store.plans[store.me] : null);
+const mePerson = () => {
+  if (!store.me || !backend) throw new Error('You are not signed in.');
+  return store.me;
+};
+export async function setPlanMode(mode) {
+  return setPlanState(mePerson(), { mode });
+}
+
+export async function setRaceDate(iso) {
+  const me = mePerson();
+  const err = raceDateError(iso || null, effectiveStartForPerson(me));
+  if (err) throw new Error(err);
+  return setPlanState(me, { raceDate: iso || null });
+}
+
+export async function setTrainingDays(days) {
+  return setPlanState(mePerson(), { trainingDays: Array.isArray(days) ? days : [] });
+}
+
+// n: whole number 1..14, or null/'' for automatic.
+export async function setWeeklyTarget(n) {
+  return setPlanState(mePerson(), { weeklyTarget: n === '' || n === undefined ? null : n });
+}
+
+export async function addPause(pause) {
+  const me = mePerson();
+  const err = pauseError(pause);
+  if (err) throw new Error(err);
+  return setPlanState(me, addPausePatch(myPlan(), pause));
+}
+
+export async function removePause(index) {
+  return setPlanState(mePerson(), removePausePatch(myPlan(), index));
+}
+
+// sessionId: a plan run id ('1-7-1-a', '1-7-1-a~r2' for the repeat pass) or the alias 'w7-tempo' (rolling.buildSessions).
+export async function skipSession(sessionId) {
+  return setPlanState(mePerson(), skipSessionPatch(myPlan(), sessionId));
+}
+
+export async function unskipSession(sessionId) {
+  return setPlanState(mePerson(), unskipSessionPatch(myPlan(), sessionId));
+}
+
+// Repeats plan week `weekN` once more right after it (flexible plan); the patch lives in plans/<me>/repeatWeeks.
+export async function repeatWeek(weekN) {
+  return setPlanState(mePerson(), repeatWeekPatch(myPlan(), weekN));
+}
+
+export async function unrepeatWeek(weekN) {
+  return setPlanState(mePerson(), unrepeatWeekPatch(myPlan(), weekN));
+}
+
 // Daily run reminder (settings/reminders/<me>). Only enabled/time/tz/updatedTs are merged in (the Worker owns
 // lastSentDate), plus lastSentDate = today when an enabled time has already passed today in the person's zone, so
 // enabling at 21:00 for 20:00 does not fire at once. `time` is validated ('HH:MM') and rounded to 5 minutes;
@@ -401,6 +467,7 @@ export async function addActivity(input) {
   const id = backend.newKey(P.log);
   const photo = input.photoDataUrl || null;
   const entry = { id, person: me, ...checked.value, hasPhoto: !!photo, ts: Date.now() };
+  if (entry.session && !sessionPinAllowed(entry.session, me)) delete entry.session; // only your own plan's sessions (or 'free')
 
   // Week fulfilment before/after, to detect a week that just became fulfilled.
   const isFulfilled = (log, e) => weekFulfillment({
@@ -409,7 +476,12 @@ export async function addActivity(input) {
   const after = entry.sport === 'run' ? isFulfilled([...store.log, entry], entry) : { n: null, done: false };
   const before = entry.sport === 'run' && after.n ? isFulfilled(store.log, entry) : { done: false };
   // (If the plan start shifts because this is the earliest run, `before` uses the old mapping on purpose.)
-  const weekJustDone = after.done && !(before.done && before.n === after.n);
+  let weekJustDone = after.done && !(before.done && before.n === after.n);
+  // Flexible plan: the run completes the week of its session, whatever its date says.
+  const rolled = entry.sport === 'run'
+    ? rollingNewlyFulfilledWeek({ beforeLog: store.log, afterLog: [...store.log, entry], person: me, goals: store.goals, settingsStartDate: store.settings.startDate, planState: store.plans, today: today.value })
+    : undefined;
+  if (rolled !== undefined) { weekJustDone = rolled !== null; after.n = rolled; }
 
   // All writes are issued back to back (the SDK keeps their order); awaiting each ack would hang offline.
   const name = store.names[me];
@@ -417,7 +489,7 @@ export async function addActivity(input) {
   if (photo) { writes.push(backend.set(`${P.photos}/${id}`, photo)); photoCache.set(id, photo); }
   writes.push(backend.set(`${P.log}/${id}`, clean(entry)));
   writes.push(pushEvent('activity', activityEventText(name, entry), id));
-  if (weekJustDone) writes.push(pushEvent('week', weekEventText(name, after.n), id));
+  if (weekJustDone && !hasWeekEvent(store.events, me, after.n)) writes.push(pushEvent('week', weekEventText(name, after.n), id));
   await settle(Promise.all(writes));
   return id;
 }
@@ -435,7 +507,12 @@ export async function updateActivity(id, input) {
   if (!prepared.changed) return id;
   const me = store.me;
   const editedTs = Date.now();
-  const weekN = newlyFulfilledWeek({
+  // (Any sport: turning a run into a cycle can re-shuffle which sessions the remaining runs take.)
+  const rolled = rollingNewlyFulfilledWeek({
+    beforeLog: store.log, afterLog: store.log.map(e => (e.id === id ? prepared.next : e)), person: me, goals: store.goals,
+    settingsStartDate: store.settings.startDate, planState: store.plans, today: today.value
+  });
+  const weekN = rolled !== undefined ? rolled : newlyFulfilledWeek({
     entry, next: prepared.next, log: store.log, goals: store.goals, settingsStartDate: store.settings.startDate, planState: store.plans, today: today.value
   });
 

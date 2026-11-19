@@ -7,7 +7,7 @@
 //  * "km" in aggregates means distance of run + hike entries; "runKm" is runs only.
 //  * Legacy imported entries have date:null. They count for points, totals and (through
 //    their explicit `week`) plan weeks, but never for streaks or the weekly series.
-import { RUN_TYPE_BY_KEY, SPORT_BY_KEY } from './plan.js';
+import { RUN_TYPE_BY_KEY, SPORT_BY_KEY, PLAN_RUN_BY_ID } from './plan.js';
 
 const DAY = 86400000;
 
@@ -329,8 +329,27 @@ const posNumber = v => {
   return Number.isFinite(n) && n > 0 ? n : NaN;
 };
 
+// Explicit pin meaning "never match this run to a plan session" (the run stays a free run; flexible plan).
+export const FREE_SESSION = 'free';
+
+// A plan session id as stored on an entry: a known plan run id, optionally with the repeat-pass suffix '~r2', or FREE_SESSION; else ''.
+export function cleanSessionId(v) {
+  if (typeof v !== 'string') return '';
+  const t = v.trim();
+  if (t === FREE_SESSION) return t;
+  const m = /^(.+?)(~r2)?$/.exec(t);
+  return m && PLAN_RUN_BY_ID[m[1]] ? t : '';
+}
+
+// May `person` pin a run to `session`? Only to their own plan's sessions (ids end in -a / -b), or to FREE_SESSION.
+export function sessionPinAllowed(session, person) {
+  if (session === FREE_SESSION) return true;
+  const hit = PLAN_RUN_BY_ID[String(session || '').replace(/~r2$/, '')];
+  return !!hit && hit.person === person;
+}
+
 // Validates + normalises the input of the log form.
-// -> { ok:true, value:{ sport, runType?, title, date, km?, durationMin?, note? } } | { ok:false, error }
+// -> { ok:true, value:{ sport, runType?, title, date, km?, durationMin?, note?, session? } } | { ok:false, error }
 // Rules: sport must be known; date must be a valid ISO date; the sport's required amount (km or
 // minutes) must be > 0; km (runs/hikes) and durationMin (any) are optional extras otherwise.
 export function validateActivityInput(input, now = new Date()) {
@@ -350,7 +369,12 @@ export function validateActivityInput(input, now = new Date()) {
     title: String(input.title || '').trim().slice(0, 80) || defaultTitle(sport.key, now),
     date: input.date
   };
-  if (sport.key === 'run') value.runType = RUN_TYPE_BY_KEY[input.runType] ? input.runType : 'easy';
+  if (sport.key === 'run') {
+    value.runType = RUN_TYPE_BY_KEY[input.runType] ? input.runType : 'easy';
+    // Flexible plan: a run may be pinned to a plan session ('1-7-1-a', '1-7-1-a~r2' for a repeated week). Unknown ids are dropped.
+    const session = cleanSessionId(input.session);
+    if (session) value.session = session;
+  }
   if (km !== null && (sport.key === 'run' || sport.key === 'hike')) value.km = round3(km);
   if (durationMin !== null) value.durationMin = round3(durationMin);
   const note = String(input.note || '').trim().slice(0, 500);

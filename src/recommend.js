@@ -13,13 +13,14 @@
 //
 // Dates are local calendar dates 'YYYY-MM-DD'; all date maths goes through scoring.js (UTC based, DST safe).
 import { PLAN } from './plan.js';
-import { buildWeeks, weekOfEntry, weekForDate, addDays, daysBetween, formatKm } from './scoring.js';
-import { effectiveStartFor } from './planModel.js';
+import { buildWeeks, weekOfEntry, weekForDate, addDays, daysBetween, mondayOf, formatKm } from './scoring.js';
+import { effectiveStartFor, personPlanState } from './planModel.js';
+import { DONE_THRESHOLD, buildSessions, matchRuns, nextOpenSession, raceFeasibility } from './rolling.js';
 
 /* ---------- tunable constants ---------- */
 
-// A planned run counts as done when the matched logged distance is at least this share of its target km.
-export const DONE_THRESHOLD = 0.9;
+// A planned run counts as done when the matched logged distance is at least this share of its target km (defined in rolling.js).
+export { DONE_THRESHOLD };
 // Run types with a multiplier at or above this are "hard efforts" (tempo 1.6, speed 1.8, race 3).
 export const HARD_MULT = 1.6;
 // A hard run is not recommended the day after a hard run or a long run.
@@ -129,6 +130,10 @@ function resolve(input) {
   const week = weekN >= 1 && weekN <= weeks.length ? weeks[weekN - 1] : null;
   const mine = log.filter(e => e && e.sport === 'run' && Number(e.km) > 0 && (!person || e.person === person));
 
+  // Rolling mode (planState.mode === 'rolling'): the candidates come from the person's session queue, not from the calendar week.
+  const pState = person === 'a' || person === 'b' ? personPlanState(input.planState, person) : null;
+  if (pState && pState.mode === 'rolling') return resolveRolling({ ...input, startDate, plan, weeks, today, weekN, week, mine, log }, pState);
+
   let items = [];
   if (week) {
     const planned = week[person].runs.map(r => ({ ...r }));
@@ -137,7 +142,25 @@ function resolve(input) {
       .sort((x, y) => (x.date || '').localeCompare(y.date || '') || (x.ts || 0) - (y.ts || 0) || String(x.id).localeCompare(String(y.id)));
     items = matchWeekRuns(planned, logged);
   }
-  return { ...input, startDate, plan, weeks, today, weekN, week, mine, items, log };
+  return { ...input, startDate, plan, weeks, today, weekN, week, mine, items, log, rolling: null };
+}
+
+// Context of a person in rolling mode: sessions, matching, and the group (one plan week pass) holding the first open session.
+function resolveRolling(c, state) {
+  const { person, goals = {}, plan, mine, today, startDate } = c;
+  const sessions = buildSessions(plan, goals, state, person);
+  const match = matchRuns({ sessions, entries: mine, personState: state, todayISO: today, startDate, person });
+  const next = nextOpenSession(sessions, match);
+  const group = next ? sessions.filter(s => !s.skipped && s.week === next.week && s.repeat === next.repeat) : [];
+  const items = group.map(s => {
+    const hit = match.bySession[s.id] || null;
+    return {
+      run: { id: s.id, type: s.type, runType: s.runType, detail: s.detail, km: s.km, mult: s.mult },
+      done: !!hit && !hit.partial, partial: !!hit && hit.partial, matched: !!hit, optional: s.optional,
+      matchedKm: hit ? hit.km : 0, entryId: hit ? hit.entryId : null
+    };
+  });
+  return { ...c, weekN: next ? next.week : c.weekN, items, rolling: { sessions, match, state, startDate, next, group } };
 }
 
 // Recent load facts from the person's dated runs (imports without a date cannot be used).
@@ -175,6 +198,7 @@ export function summarizeWeekMatches(input) {
 }
 
 function summarize(c) {
+  if (c.rolling) return summarizeRolling(c);
   const items = c.items.map(it => ({ ...it, run: runView(it.run, c.weekN) }));
   const required = items.filter(it => !it.optional);
   return {
@@ -184,6 +208,21 @@ function summarize(c) {
     totalCount: required.length,
     optionalCount: items.length - required.length,
     remaining: required.filter(it => !it.done).map(it => it.run)
+  };
+}
+
+// Rolling mode: the group (one plan week pass) holding the first open session; partial runs consumed their session (not remaining).
+function summarizeRolling(c) {
+  const weekN = c.rolling.next ? c.rolling.next.week : null;
+  const items = c.items.map(it => ({ ...it, run: runView(it.run, weekN) }));
+  const required = items.filter(it => !it.optional);
+  return {
+    weekNumber: weekN,
+    items,
+    doneCount: required.filter(it => it.done).length,
+    totalCount: required.length,
+    optionalCount: items.length - required.length,
+    remaining: required.filter(it => !it.matched).map(it => it.run)
   };
 }
 
@@ -204,6 +243,7 @@ export function recommendNext(input) {
 }
 
 function decide(c, depth) {
+  if (c.rolling) return decideRolling(c, depth);
   const { today, week, weekN, weeks } = c;
   const summary = summarize(c);
   const daysLeft = week ? Math.max(0, daysBetween(today, week.endDate) + 1) : 0;
@@ -345,15 +385,15 @@ function assess(run, idx, ctx) {
   }
   if (t === 'long') {
     if (facts.yLoad === 'hard') add(SCORE.longAfterHard, `Better after a rest day: yesterday's ${facts.yType} was hard.`, 'afterHard');
-    if (isWeekend(dow)) add(SCORE.weekendLong, 'Long runs fit best on the weekend.', 'weekendLong');
+    if (longDay(ctx, dow)) add(SCORE.weekendLong, 'Long runs fit best on the weekend.', 'weekendLong');
     else if (!ctx.behind && ctx.weekendLeft && dow <= 4) add(SCORE.weekdayLong, `Save it for the weekend (${nextWeekendName(ctx)}).`, 'weekdayLong');
     else if (!ctx.behind && ctx.weekendLeft && dow === 5) add(SCORE.fridayLong, 'The weekend suits a long run better.', 'weekdayLong');
   } else if (isQualityType(t)) {
     if (ctx.tight) add(SCORE.tightQuality, 'Hard efforts go first when every remaining day is needed.', 'tight');
-    else if (dow >= 2 && dow <= 4) add(SCORE.midweekQuality, 'Quality work fits Tuesday to Thursday.', 'midweek');
+    else if (qualityDay(ctx, dow)) add(SCORE.midweekQuality, 'Quality work fits Tuesday to Thursday.', 'midweek');
     else if (dow === 1) add(SCORE.mondayQuality, 'Better after an easier start to the week.');
     else if (dow === 5 && ctx.longOpen && !ctx.behind) add(SCORE.fridayQuality, 'Too close to the weekend long run.');
-    else if (isWeekend(dow) && ctx.longOpen && !ctx.behind) add(SCORE.weekendQuality, 'The long run has priority on the weekend.');
+    else if (longDay(ctx, dow) && ctx.longOpen && !ctx.behind) add(SCORE.weekendQuality, 'The long run has priority on the weekend.');
   } else { // easy / shakeout
     if (hardYesterday) add(SCORE.recoveryEasy, null, 'recovery');
     else if (dow === 1 || dow === 5) add(SCORE.openerEasy, null, 'opener');
@@ -365,6 +405,11 @@ function assess(run, idx, ctx) {
   return o;
 }
 
+// Day preferences: Saturday / Sunday for the long run and Tuesday to Thursday for quality, unless the person's training days
+// (rolling mode, ctx.isLongDay / ctx.isQualityDay) say otherwise.
+const longDay = (ctx, dow) => (ctx.isLongDay ? ctx.isLongDay(dow) : isWeekend(dow));
+const qualityDay = (ctx, dow) => (ctx.isQualityDay ? ctx.isQualityDay(dow) : dow >= 2 && dow <= 4);
+
 const altOf = s => ({ run: s.run, why: s.notes[0] || `Also open this week (${pts(s.run)} pts).` });
 
 function nextWeekendDay(today, endDate) {
@@ -375,7 +420,7 @@ function nextWeekendDay(today, endDate) {
   }
   return null;
 }
-const nextWeekendName = ctx => weekdayName(nextWeekendDay(ctx.today, ctx.week.endDate) || ctx.today);
+const nextWeekendName = ctx => weekdayName(ctx.week ? (nextWeekendDay(ctx.today, ctx.week.endDate) || ctx.today) : (ctx.nextLongDate || ctx.today));
 
 /* ---------- explanations ---------- */
 
@@ -387,9 +432,11 @@ function explain(best, ctx, pool) {
   const tags = [];
   let reason;
 
-  if (behind) {
+  if (behind && !(ctx.rolling && ctx.easeBack)) {
     tags.push('Catch-up');
-    reason = `Catch-up: ${plural(ctx.remaining.length, 'run is', 'runs are')} left and only ${plural(ctx.daysLeft, 'day', 'days')} in week ${ctx.weekN}, so the most valuable safe run goes first: ${label(run)}, worth ${pts(run)} points.`;
+    reason = ctx.rolling
+      ? `Catch-up: you are ${plural(ctx.behindSessions, 'session', 'sessions')} behind plan pace, so the most valuable safe run goes first: ${label(run)}, worth ${pts(run)} points.`
+      : `Catch-up: ${plural(ctx.remaining.length, 'run is', 'runs are')} left and only ${plural(ctx.daysLeft, 'day', 'days')} in week ${ctx.weekN}, so the most valuable safe run goes first: ${label(run)}, worth ${pts(run)} points.`;
   } else if (best.flags.has('easeBack') && (run.runType === 'easy' || run.runType === 'shakeout')) {
     tags.push('Ease back in');
     reason = `It's been ${facts.daysSince} days since your last run, so ease back in with the ${formatKm(run.km)} km easy run. Hard and long runs can wait a few days.`;
@@ -432,11 +479,15 @@ function restWithTomorrow(c, base, result, lead, tag, remainingItems, depth) {
     out.reason = `${lead} Next up tomorrow: ${withDetail(tomorrowRec.run)}.`;
     out.alternatives = tomorrowRec.alternatives;
     if (tomorrowRec.tags.includes('Catch-up')) out.tags.push('Catch-up');
+  } else if (tomorrowRec && tomorrowRec.kind === 'rest' && c.rolling && tomorrowRec.run && tomorrowRec.forDate) {
+    out.run = tomorrowRec.run;
+    out.forDate = tomorrowRec.forDate;
+    out.reason = `${lead} Next up ${weekdayName(tomorrowRec.forDate)}: ${withDetail(tomorrowRec.run)}.`;
   } else if (tomorrowRec && tomorrowRec.kind === 'rest') {
     out.reason = `${lead} Tomorrow is a rest day too.`;
   } else {
     const left = remainingItems.length;
-    out.reason = `${lead} ${left ? `${plural(left, 'planned run is', 'planned runs are')} still open this week.` : ''}`.trim();
+    out.reason = `${lead} ${left ? `${plural(left, 'planned run is', 'planned runs are')} still open${c.rolling ? '' : ' this week'}.` : ''}`.trim();
   }
   return result('rest', out);
 }
@@ -445,7 +496,7 @@ function restWithTomorrow(c, base, result, lead, tag, remainingItems, depth) {
 
 function raceWeek(c, ctx, raceRun, result) {
   const { today, week, facts } = ctx;
-  const raceDate = week.endDate;
+  const raceDate = ctx.raceDate || week.endDate; // rolling mode: the person's own race date
   const toRace = daysBetween(today, raceDate);
   const raceName = `${weekdayName(raceDate)} ${shortDate(raceDate)}`;
   const shake = c.items.find(it => it.run.runType === 'shakeout');
@@ -496,4 +547,170 @@ function firstRun(weeks, n, person) {
   if (!w) return null;
   const r = w[person].runs.find(x => x.km > 0);
   return r ? runView(r, n) : null;
+}
+
+/* ---------- rolling mode: next up from the session queue ---------- */
+
+const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// Day preferences of a rolling plan (dow 1 = Monday ... 7 = Sunday). Without training days: Sat/Sun long, Tue-Thu quality (as today).
+// With them: the long run belongs on the weekend training day(s), else on the last training day of the week; quality prefers
+// training days between Tuesday and Thursday, else any training day that is not a long-run day.
+function dayPreferences(trainingDays) {
+  if (!trainingDays.length) return { isLongDay: dow => isWeekend(dow), isQualityDay: dow => dow >= 2 && dow <= 4 };
+  const days = new Set(trainingDays.map(d => (d === 0 ? 7 : d)));
+  const weekend = [...days].filter(isWeekend);
+  const longDays = new Set(weekend.length ? weekend : [Math.max(...days)]);
+  const mid = [...days].filter(d => d >= 2 && d <= 4);
+  const other = [...days].filter(d => !longDays.has(d));
+  const quality = new Set(mid.length ? mid : other.length ? other : [...days]);
+  return { isLongDay: dow => longDays.has(dow), isQualityDay: dow => quality.has(dow) };
+}
+
+function decideRolling(c, depth) {
+  const { today, person, rolling: R } = c;
+  const { sessions, match, state, startDate, next } = R;
+  const behindN = match.behind;
+  const facts = loadFacts(c.mine, today);
+  const summary = summarizeRolling(c);
+  const feas = raceFeasibility({ sessions, match, personState: state, todayISO: today, ranToday: facts.ranToday, person });
+  const calDaysLeft = daysBetween(today, addDays(mondayOf(today), 6)) + 1;
+  const base = {
+    weekNumber: next ? next.week : null, summary, plannedLeft: match.openCount, daysLeftInWeek: calDaysLeft,
+    rolling: { behindSessions: behindN, openCount: match.openCount, doneCount: match.doneCount, totalCount: match.totalCount, nextSessionId: next ? next.id : null }
+  };
+  const nudge = r => {
+    if ((r.kind !== 'run' && r.kind !== 'rest') || behindN < 2 || r.tags.some(t => t === 'Race day' || t === 'Race eve')) return r;
+    const note = `You are ${plural(behindN, 'session', 'sessions')} behind plan pace, so try not to skip the next ones.`;
+    return { ...r, tags: [...r.tags, 'Behind'], reason: /behind/i.test(r.reason) ? r.reason : `${r.reason} ${note}` };
+  };
+  const result = (kind, extra) => nudge({ kind, tags: [], alternatives: [], ...base, ...extra, ...(feas ? { raceFeasibility: feas } : {}) });
+
+  /* --- before the start --- */
+  if (today < startDate) {
+    const firstS = sessions.find(s => !s.skipped && !s.optional);
+    const first = firstS ? runView(firstS, firstS.week) : null;
+    const inDays = daysBetween(today, startDate);
+    const when = inDays === 1 ? 'tomorrow' : `on ${weekdayName(startDate)} ${shortDate(startDate)} (in ${inDays} days)`;
+    return result('not-started', {
+      reason: first ? `Your plan starts ${when}. Week ${firstS.week} opens with ${label(first)}.` : `Your plan starts ${when}.`,
+      tags: ['Plan not started'], alternatives: first ? [{ run: first, why: 'First planned run' }] : [],
+      plannedLeft: match.totalCount, daysLeftInWeek: 0, startsOn: startDate, startsInDays: inDays
+    });
+  }
+
+  /* --- nothing left in the queue --- */
+  if (!next) {
+    const raceDone = sessions.some(s => s.runType === 'race' && match.bySession[s.id] && !match.bySession[s.id].partial);
+    return result('done', {
+      reason: raceDone
+        ? `Race done: that is the whole plan finished. Be proud and rest well.`
+        : match.totalCount
+          ? `All ${match.totalCount} sessions of the plan are done. Enjoy the finish and keep running because you love it.`
+          : 'There are no sessions left in your plan.',
+      tags: ['Plan complete']
+    });
+  }
+
+  const remainingItems = c.items.filter(it => !it.optional && !it.matched);
+
+  /* --- on a break (a pause covers today): no run, no reminder --- */
+  const pause = state.pauses.find(p => today >= p.from && today <= p.to);
+  if (pause && !facts.ranToday) {
+    const back = addDays(pause.to, 1);
+    return result('rest', {
+      tags: ['Paused', 'Rest day'], run: runView(next, next.week), forDate: back,
+      reason: `Your plan is paused until ${weekdayName(pause.to)} ${shortDate(pause.to)}${pause.note ? ` (${pause.note})` : ''}. Back to it on ${weekdayName(back)} ${shortDate(back)}: ${withDetail(runView(next, next.week))}.`
+    });
+  }
+
+  /* --- a run today already --- */
+  if (facts.ranToday) return restWithTomorrow(c, base, result, 'You already ran today, so rest up.', 'Rest day', remainingItems, depth);
+
+  const weekN = next.week;
+  let remaining = remainingItems.map(it => runView(it.run, weekN));
+  const prefs = dayPreferences(state.trainingDays);
+  const dow = dowOf(today);
+
+  /* --- the race --- */
+  const raceRun = remaining.find(r => r.runType === 'race');
+  if (raceRun) {
+    const toRace = state.raceDate ? daysBetween(today, state.raceDate) : null;
+    if (toRace !== null && toRace <= 7) {
+      return raceWeek(c, { today, week: null, facts, remaining, raceDate: state.raceDate }, raceRun, result);
+    }
+    remaining = remaining.filter(r => r !== raceRun); // the race is not for today: the other open sessions come first
+    if (!remaining.length) {
+      if (toRace !== null) {
+        return result('rest', {
+          run: raceRun, forDate: state.raceDate, tags: ['Race ahead', 'Rest day'],
+          reason: `Everything but the race is done. The ${formatKm(raceRun.km)} km race is on ${weekdayName(state.raceDate)} ${shortDate(state.raceDate)}, ${toRace} days away: keep the legs ticking over with easy runs if you like.`
+        });
+      }
+      return result('run', {
+        run: raceRun, forDate: today, tags: ['Race day'],
+        reason: `All the training is done: the ${formatKm(raceRun.km)} km race (${pts(raceRun)} points) is all that is left. Pick your day, start at your practised pace and fuel early.`
+      });
+    }
+  }
+
+  /* --- not a training day --- */
+  if (state.trainingDays.length && !state.trainingDays.includes(dow % 7)) {
+    const names = state.trainingDays.map(d => DAY_ABBR[d]).join(', ');
+    let nextDay = null;
+    for (let i = 1; i <= 7 && !nextDay; i++) if (state.trainingDays.includes(dowOf(addDays(today, i)) % 7)) nextDay = addDays(today, i);
+    const rec = nextDay && depth < 2 ? decide(resolve({ ...c, todayISO: nextDay }), depth + 1) : null;
+    const lead = `Not a training day (you train on ${names}).`;
+    if (rec && rec.run) {
+      return result('rest', {
+        run: rec.run, forDate: nextDay, tags: ['Rest day'], alternatives: rec.alternatives || [],
+        reason: `${lead} Next up on ${weekdayName(nextDay)}: ${withDetail(rec.run)}.`
+      });
+    }
+    return result('rest', { tags: ['Rest day'], reason: lead });
+  }
+
+  const behind = behindN >= 2;
+  let nextLongDate = null;
+  for (let i = 1; i <= 7 && !nextLongDate; i++) if (prefs.isLongDay(dowOf(addDays(today, i)))) nextLongDate = addDays(today, i);
+  const ctx = {
+    dow, today, week: null, weekN, daysLeft: calDaysLeft, remaining, weekendLeft: true, facts,
+    behind, tight: false, longOpen: remaining.some(r => r.runType === 'long'),
+    easeBack: facts.daysSince != null && facts.daysSince > EASE_BACK_AFTER_DAYS,
+    rolling: true, behindSessions: behindN, nextLongDate, isLongDay: prefs.isLongDay, isQualityDay: prefs.isQualityDay
+  };
+
+  /* --- three run days in a row: rest unless behind --- */
+  if (facts.streak >= REST_AFTER_RUN_DAYS && !behind) {
+    return restWithTomorrow(c, base, result,
+      `You have run ${facts.streak} days in a row, so take a rest day to absorb the training.`, 'Rest day', remainingItems, depth);
+  }
+
+  /* --- score the candidates --- */
+  const scored = remaining.map((r, i) => assess(r, i, ctx)).sort((x, y) => (x.blocked - y.blocked) || (y.score - x.score) || (x.idx - y.idx));
+  let pool = scored.filter(s => !s.blocked);
+  // value first when behind, except after a long break: the ease-back rule (easy run first) keeps priority
+  if (behind && !ctx.easeBack) pool = [...pool].sort((x, y) => (y.run.mult * (y.run.km || 0)) - (x.run.mult * (x.run.km || 0)) || x.idx - y.idx);
+  const best = pool[0];
+
+  if (!best) {
+    const top = scored[0];
+    return result('rest', {
+      reason: `Rest today: ${lower(label(top.run))} is a hard effort and yesterday's ${facts.yType} still counts. A rest or easy day first, then it is safe.`,
+      tags: ['Rest day', 'Recovery'], run: top.run, forDate: addDays(today, 1),
+      alternatives: scored.slice(1, 3).map(altOf)
+    });
+  }
+  if (!behind && best.score <= AVOID_SCORE) {
+    const forDate = nextLongDate || addDays(today, 1);
+    return result('rest', {
+      reason: `Rest or a short, easy jog today. The ${formatKm(best.run.km)} km ${lower(best.run.type)} is best on ${weekdayName(forDate)}, when you have time and fresh legs.`,
+      tags: ['Rest day', best.run.runType === 'long' ? 'Weekend long run' : 'Save it'],
+      run: best.run, forDate,
+      alternatives: scored.filter(s => s !== best).slice(0, 2).map(altOf)
+    });
+  }
+  const alternatives = scored.filter(s => s !== best).slice(0, 2).map(altOf);
+  const { reason, tags } = explain(best, ctx, pool);
+  return result('run', { run: best.run, forDate: today, reason, tags, alternatives });
 }

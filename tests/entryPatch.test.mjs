@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PLAN } from '../src/plan.js';
 import { buildWeeks } from '../src/scoring.js';
 import {
-  formFromEntry, isAutoTitle, changeSport, applyPatch, prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment, FUTURE_DATE_ERROR
+  rollingNewlyFulfilledWeek, formFromEntry, isAutoTitle, changeSport, applyPatch, prepareEdit, newlyFulfilledWeek, hasWeekEvent, weekFulfillment, FUTURE_DATE_ERROR
 } from '../src/utils/entryPatch.js';
 
 const TODAY = '2026-03-20';
@@ -15,7 +15,7 @@ const edit = (entry, over = {}, opts = {}) => prepareEdit(entry, { ...formFromEn
 
 test('formFromEntry gives strings and empty date for undated imports', () => {
   const f = formFromEntry({ sport: 'run', km: 5.5, durationMin: 30, date: null, title: 'Week 2 · Easy' });
-  assert.deepEqual(f, { sport: 'run', runType: 'easy', date: '', km: '5.5', durationMin: '30', title: 'Week 2 · Easy', note: '' });
+  assert.deepEqual(f, { sport: 'run', runType: 'easy', date: '', km: '5.5', durationMin: '30', title: 'Week 2 · Easy', note: '', session: '' });
 });
 
 test('an untouched form produces an empty patch and no change', () => {
@@ -61,7 +61,7 @@ test('changing sport drops the fields that no longer apply', () => {
 
 test('changeSport clears runType, km and auto titles but keeps duration, date, note', () => {
   const f = { sport: 'run', runType: 'tempo', date: '2026-03-01', km: '5', durationMin: '30', title: 'Evening run', note: 'n' };
-  assert.deepEqual(changeSport(f, 'swim'), { sport: 'swim', runType: 'easy', date: '2026-03-01', km: '', durationMin: '30', title: '', note: 'n' });
+  assert.deepEqual(changeSport(f, 'swim'), { sport: 'swim', runType: 'easy', date: '2026-03-01', km: '', durationMin: '30', title: '', note: 'n', session: '' });
   assert.equal(changeSport({ ...f, title: 'Park loop' }, 'hike').title, 'Park loop');
   assert.equal(changeSport(f, 'hike').km, '5');
   assert.equal(changeSport(f, 'hike').runType, 'easy');
@@ -213,4 +213,34 @@ test('newlyFulfilledWeek: does not throw when the edit moves a run before the pl
   const entry = run({ id: 'm', date: '2026-03-04', km: 20 });
   const next = { ...entry, date: '2026-01-05' };
   assert.doesNotThrow(() => newlyFulfilledWeek({ entry, next, log: [entry], settingsStartDate: '2026-03-02', today: TODAY }));
+});
+
+/* ---------- flexible plan: session pin + week completion ---------- */
+
+test('a session pin is kept for own plan sessions, dropped for unknown ids and the other person\'s sessions', () => {
+  const pinned = edit(run(), { session: '1-2-1-a' });
+  assert.equal(pinned.ok, true);
+  assert.equal(pinned.patch.session, '1-2-1-a');
+  assert.equal(edit(run(), { session: '1-2-1-a~r2' }).patch.session, '1-2-1-a~r2');
+  assert.equal('session' in edit(run(), { session: 'nope' }).patch, false);
+  assert.equal('session' in edit(run(), { session: '1-2-1-b' }).patch, false);
+  // removing the pin clears the field
+  assert.equal(edit(run({ session: '1-2-1-a' }), { session: '' }).patch.session, null);
+  // switching away from run clears it
+  assert.equal(changeSport({ sport: 'run', session: '1-2-1-a', title: 'x' }, 'swim').session, '');
+});
+
+test('rollingNewlyFulfilledWeek: undefined in calendar mode, the completed session week in flexible mode', () => {
+  const planState = { a: { mode: 'rolling', startDate: START } };
+  const w1 = PLAN[0].runs.a;
+  const mk = (r, i) => ({ id: `r${i}`, person: 'a', sport: 'run', runType: r.runType, title: 't', date: `2026-03-0${2 + i}`, km: r.km, hasPhoto: false, ts: i });
+  const first = w1.slice(0, 2).map(mk);
+  const last = mk(w1[2], 2);
+  const args = { person: 'a', today: '2026-03-12', planState };
+  assert.equal(rollingNewlyFulfilledWeek({ ...args, beforeLog: first, afterLog: [...first, last] }), 1);
+  assert.equal(rollingNewlyFulfilledWeek({ ...args, beforeLog: [], afterLog: first }), null);
+  assert.equal(rollingNewlyFulfilledWeek({ person: 'a', today: '2026-03-12', planState: {}, beforeLog: first, afterLog: [...first, last] }), undefined);
+  // a late run still completes the week its session belongs to (dated two weeks later than the plan week)
+  const late = { ...last, date: '2026-03-25' };
+  assert.equal(rollingNewlyFulfilledWeek({ ...args, today: '2026-03-30', beforeLog: first, afterLog: [...first, late] }), 1);
 });

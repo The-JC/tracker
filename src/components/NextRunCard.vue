@@ -29,6 +29,17 @@ const rec = computed(() => {
   }).rec;
 });
 
+// Flexible plan with a race date: do the open sessions fit before race day? ({ daysLeft, sessionsLeft, slots, fits, shortBy })
+const feasibility = computed(() => (rec.value && rec.value.raceFeasibility) || null);
+const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
+const feasibilityText = computed(() => {
+  const f = feasibility.value;
+  if (!f) return '';
+  return f.fits
+    ? `${plural(f.daysLeft, 'day')} to race day: ${plural(f.sessionsLeft, 'session')} left and room for ${plural(f.slots, 'run')}. That fits.`
+    : `${plural(f.daysLeft, 'day')} to race day: ${plural(f.sessionsLeft, 'session')} left but only room for ${plural(f.slots, 'run')}. ${f.shortBy === 1 ? 'One session' : `${f.shortBy} sessions`} too many: skip an optional one, add training days or move the race date.`;
+});
+
 const runText = run => (run.km ? `${run.type} · ${formatKm(run.km)} km` : run.type);
 
 // Icon (from the sprite in index.html), headline and sub line per state.
@@ -145,6 +156,14 @@ const RULES = [
             </span>
           </li>
         </ul>
+      </div>
+
+      <div v-if="feasibility" class="banner" :class="{ 'banner--warning': !feasibility.fits }" :role="feasibility.fits ? 'status' : 'alert'" data-testid="race-feasibility">
+        <span class="banner__icon"><svg class="icon" aria-hidden="true"><use :href="feasibility.fits ? '#i-flag' : '#i-alert'" /></svg></span>
+        <div class="banner__body">
+          <div class="banner__title">{{ feasibility.fits ? 'On track for race day' : 'Race day is tight' }}</div>
+          <div class="banner__text">{{ feasibilityText }}</div>
+        </div>
       </div>
 
       <ul v-if="rec.alternatives.length" class="next-run__alts" aria-label="Other options">

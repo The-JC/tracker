@@ -8,6 +8,7 @@
 //  * Normalisation never throws: unknown / invalid fields are dropped and replaced by the defaults.
 //  * Dates are local calendar dates 'YYYY-MM-DD'; all arithmetic goes through scoring.js (UTC based, DST safe).
 import { PLAN } from './plan.js';
+import { rollingWeeksFor } from './rolling.js';
 import {
   buildWeeks, effectiveStartDate, weekOfEntry, weekForDate, goalKm, addDays, daysBetween, mondayOf, isValidISODate, todayISO as nowISO
 } from './scoring.js';
@@ -30,6 +31,7 @@ export const DEFAULT_PLAN_STATE = Object.freeze({
   raceDate: null,
   pauses: Object.freeze([]),
   skipped: Object.freeze([]),
+  repeatWeeks: Object.freeze([]),
   trainingDays: Object.freeze([]),
   weeklyTarget: null,
   fallbackStartDate: null
@@ -83,6 +85,17 @@ export function normalizeSkipped(raw) {
   return out;
 }
 
+// Plan weeks (1..plan length) a person repeats once more in rolling mode: integers, unique, ascending.
+const asPlanWeek = v => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,3}$/.test(v.trim()) ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= PLAN.length ? n : null;
+};
+export function normalizeRepeatWeeks(raw) {
+  const set = new Set();
+  for (const v of toList(raw)) { const n = asPlanWeek(v); if (n !== null) set.add(n); }
+  return [...set].sort((x, y) => x - y);
+}
+
 const asWeekday = v => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && /^[0-6]$/.test(v.trim()) ? Number(v) : NaN;
   return Number.isInteger(n) && n >= 0 && n <= 6 ? n : null;
@@ -110,6 +123,7 @@ export function normalizePersonState(raw, { settingsStartDate = null } = {}) {
     raceDate: validIso(r.raceDate),
     pauses: normalizePauses(r.pauses),
     skipped: normalizeSkipped(r.skipped),
+    repeatWeeks: normalizeRepeatWeeks(r.repeatWeeks),
     trainingDays: normalizeTrainingDays(r.trainingDays),
     weeklyTarget: asWeeklyTarget(r.weeklyTarget),
     fallbackStartDate: validIso(settingsStartDate)
@@ -137,7 +151,10 @@ function stateOf(state, person) {
 
 /* ---------- validating a patch (setPlanState) ---------- */
 
-export const PLAN_FIELDS = ['mode', 'startDate', 'raceDate', 'pauses', 'skipped', 'trainingDays', 'weeklyTarget'];
+export const PLAN_FIELDS = ['mode', 'startDate', 'raceDate', 'pauses', 'skipped', 'repeatWeeks', 'trainingDays', 'weeklyTarget'];
+
+// One person's normalised state out of { a, b } / a single state / a raw stored node (the helper the other modules share).
+export const personPlanState = (state, person) => stateOf(state, person);
 
 // Strict counterpart of normalizePersonState for user input: only the provided fields are checked and an invalid one is an
 // error (so the UI can say why), instead of being dropped silently. `null` clears a field (arrays: empty list).
@@ -168,6 +185,10 @@ export function validatePlanPatch(patch) {
       if (v === null) { out.skipped = []; continue; }
       if (!Array.isArray(v) || v.some(s => typeof s !== 'string' || !s.trim() || s.trim().length > MAX_ID)) return fail('Skipped sessions must be a list of ids.');
       out.skipped = normalizeSkipped(v);
+    } else if (key === 'repeatWeeks') {
+      if (v === null) { out.repeatWeeks = []; continue; }
+      if (!Array.isArray(v) || v.some(n => asPlanWeek(n) === null)) return fail(`Repeated weeks must be plan weeks 1 to ${PLAN.length}.`);
+      out.repeatWeeks = normalizeRepeatWeeks(v);
     } else if (key === 'trainingDays') {
       if (v === null) { out.trainingDays = []; continue; }
       if (!Array.isArray(v) || v.some(d => asWeekday(d) === null)) return fail('Training days must be weekdays 0 (Sunday) to 6 (Saturday).');
@@ -205,7 +226,18 @@ export function buildWeeksFor({ plan = PLAN, goals = {}, log = [], state, todayI
   const wa = buildWeeks(plan, goals, log, startA, todayISO);
   const wb = startB === startA ? wa : buildWeeks(plan, goals, log, startB, todayISO);
   const ref = viewer === 'b' ? wb : wa;
-  return ref.map((w, i) => ({ ...w, a: wa[i].a, b: wb[i].b }));
+  // Rolling mode (phase 2): that person's week data comes from the session queue (rolling.js) instead of the calendar.
+  // Calendar mode never reaches it, so its output is untouched.
+  const ra = stateOf(state, 'a').mode === 'rolling' ? rollingWeeksFor({ plan, goals, log, person: 'a', state: stateOf(state, 'a'), startDate: startA, todayISO }) : null;
+  const rb = stateOf(state, 'b').mode === 'rolling' ? rollingWeeksFor({ plan, goals, log, person: 'b', state: stateOf(state, 'b'), startDate: startB, todayISO }) : null;
+  if (!ra && !rb) return ref.map((w, i) => ({ ...w, a: wa[i].a, b: wb[i].b }));
+  const rv = viewer === 'b' ? rb : ra;
+  return ref.map((w, i) => ({
+    ...w,
+    ...(rv ? { current: rv.currentIndex === i } : {}), // the viewer's "current" week follows their queue when they are rolling
+    a: ra ? ra.weeks[i] : wa[i].a,
+    b: rb ? rb.weeks[i] : wb[i].b
+  }));
 }
 
 // Per-person calendar of the plan weeks: { a: [{ n, startDate, endDate, current, over }], b: [...] } in plan order.

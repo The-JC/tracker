@@ -38,6 +38,7 @@ trailhead-tracker-v1/
   nameA, nameB                      legacy, still read/written for names
   goals/{runId}: "5.5"              plan-km overrides (legacy format, kept)
   settings/{startDate, migratedV1}
+  plans/{a|b}: PlanState               per-person plan state (flexible plan, phase 1): { mode?, startDate?, raceDate?, pauses?, skipped?, trainingDays?, weeklyTarget? }, see docs/FLEXIBLE_PLAN.md §8. Absent node = defaults (calendar mode, start from settings/startDate). Each person writes only their own node; the Worker reads both.
   settings/reminders/{a|b}: { enabled, time:'HH:MM', tz, lastSentDate:'YYYY-MM-DD'|null, updatedTs }   daily run reminder (see below)
   log/{id}: ActivityEntry
   photos/{id}: "data:image/jpeg;base64,…"
@@ -106,6 +107,7 @@ export const store = reactive({
   me: 'a'|'b'|null,                 // derived from user.email via PEOPLE; never chosen manually
   names: { a:'Beatrix', b:'Julian' },
   settings: { startDate: null|'YYYY-MM-DD' },
+  plans: { a: PlanState, b: PlanState },     // plans/<a|b> normalised by src/planModel.js (defaults filled; no fallbackStartDate, see planStates)
   reminders: { a: Reminder, b: Reminder },   // Reminder = { enabled, time:'HH:MM', tz, lastSentDate:null|'YYYY-MM-DD', updatedTs } with defaults filled (src/utils/reminderTime.js normalizeReminder)
   goals: { [runId]: string },
   log: ActivityEntry[],            // newest first (date desc, then ts desc)
@@ -116,15 +118,22 @@ export const store = reactive({
   notifPermission: 'default'|'granted'|'denied'|'unsupported',
   backend: 'firebase'|'local', online: boolean
 })
-export const effectiveStartDate  // computed ref → 'YYYY-MM-DD'
+export const effectiveStartDate  // computed ref → 'YYYY-MM-DD'; the SIGNED-IN person's plan start (person a's before sign-in)
+export const effectiveStartForPerson(person)  // function → that person's start (own plans/<p>/startDate, else settings/startDate, else automatic rule)
+export const planStates          // computed → { a, b } normalised plan states incl. fallbackStartDate (= settings/startDate); store.plans holds the stored ones
+export const weekWindows         // computed → { a:[{n,startDate,endDate,current,over}×30], b:[…] }: each person's own plan-week calendar
+export const weekStreaks         // computed → { a, b } each { current, best, thisWeek:{runs,target,met,paused}, target } (calendar-week streak, planModel.weekStreak)
 export const scoreboard          // computed → { a:{points,km,runKm,count,planPct,streak}, b:{…} }
-export const weeks               // computed → [{ n, kind, tag, current, a:WeekPerson, b:WeekPerson }]
+export const weeks               // computed → [{ n, kind, tag, current, a:WeekPerson, b:WeekPerson }]; a and b are each evaluated against THEIR OWN start; current/startDate/endDate follow the signed-in person (use weekWindows for both)
                                  //   WeekPerson = { plannedKm, doneKm, pct|null, status, runs:[{id,type,detail,km,mult}] }
 export const stats               // computed → { a:Stats, b:Stats }  Stats = { totalKm, totalPoints, count, longestRunKm, bestPaceMinPerKm|null, streakDays, weeklyKm:[{weekStart,km}×8] }
 export const unreadCount         // computed → events by the other person newer than lastReadTs
 
 export function signInWithGoogle(localPerson?): Promise<void>;  export function signOut(): Promise<void>   // localPerson 'a'|'b' only used by the ?local=1 backend
-export function setName(p, name), setStartDate(iso|null), setGoal(runId, kmString)
+export function setName(p, name), setStartDate(iso|null) /* legacy global start = fallback for both people */, setGoal(runId, kmString)
+export function setPlanState(person, patch /* any of mode,startDate,raceDate,pauses,skipped,trainingDays,weeklyTarget; null clears */): Promise<PlanState>
+  // own plan only (person === store.me, else throws); validated by planModel.validatePlanPatch (throws a user-facing message); only provided fields are written
+  // (cleared fields are removed from plans/<person>); optimistic, offline-safe (settle)
 export function addActivity(input /* {sport,runType?,title?,date,km?,durationMin?,note?,photoDataUrl?} */): Promise<string>  // person = store.me; emits an 'activity' event, and a 'week' event when a week becomes fulfilled
 export function updateActivity(id, patch /* addActivity input shape, plus removePhoto?: true; no photo key keeps the photo */): Promise<string>
   // own entries only; validates like addActivity (+ no future date); writes only changed fields + editedTs (never person/id/ts/kudos/imported);

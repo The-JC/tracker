@@ -66,7 +66,7 @@ people's Pages sites as browser origins (they still cannot get past the token ch
    A time inside a DST gap (e.g. 02:30 on 2026-03-29 in Zurich) fires at the first tick after the gap; a repeated hour fires once.
    The window ends at local midnight (a 23:30 reminder is only sent until 23:59).
 3. No stored subscription: skipped silently, the day is not claimed (subscribing later in the window still works).
-4. The recommendation is `recommendForPerson` (log, goals, `settings/startDate`, today), identical to the app's Next-up card. If its kind is not
+4. The recommendation is `recommendForPerson` (log, goals, `settings/startDate`, the per-person plan state `plans`, today), identical to the app's Next-up card. `plans/<a|b>` (own `startDate`, ...) is read with the same credentials; an absent or unreadable node means the old behaviour (the settings start date applies to both). Phase 1 of the flexible plan only uses `startDate`; the Worker also imports `src/planModel.js`. If its kind is not
    `run`, or the person already logged any activity dated today, nothing is sent but the day is still claimed.
 5. Otherwise `lastSentDate = today` is written **before** sending (at-most-once: a failed push is never retried, a missed day is better than a duplicate),
    then `Today: <run>` with the recommendation's reason (<= 140 chars) is pushed (tag `trailhead-reminder`, url `/#/feed`). Dead subscriptions are deleted.
@@ -138,7 +138,7 @@ If you later narrow the rules, `pushSubs/<person>` must stay writable by that pe
 
 ## Implementation notes
 
-* **Own WebCrypto code, no runtime dependencies** (`src/webpush.js`, `src/firebaseToken.js`, `src/x509.js`, `src/serviceAccount.js`). The Worker bundle also imports the app's pure modules `../src/recommendForPerson.js`, `recommend.js`, `scoring.js`, `plan.js` so the reminder and the Next-up card share one pipeline.
+* **Own WebCrypto code, no runtime dependencies** (`src/webpush.js`, `src/firebaseToken.js`, `src/x509.js`, `src/serviceAccount.js`). The Worker bundle also imports the app's pure modules `../src/recommendForPerson.js`, `recommend.js`, `planModel.js`, `scoring.js`, `plan.js` so the reminder and the Next-up card share one pipeline.
   The crypto is ~60 lines, avoids supply-chain and Workers-compat issues, and is checked against an independent
   `node:crypto` receiver plus the RFC 8291 appendix A test vector. The x509 parser was also checked against Google's live certs.
 * ID token: RS256 signature against Google's securetoken x509 certs (cached per `max-age`, forced refresh at most once a minute on

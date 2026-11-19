@@ -3,7 +3,7 @@
 // Props: none. Emits: none. Lazy-loaded by App.vue.
 // Reads stats (computed -> {a,b}), store.names; RUN_TYPES from plan.js; formatPace/formatKm from scoring.js.
 import { computed } from 'vue';
-import { store, stats } from '../store.js';
+import { store, stats, weekStreaks } from '../store.js';
 import { formatPace, formatKm, formatPoints } from '../scoring.js';
 import { RUN_TYPES } from '../plan.js';
 import { PERSONS, chartModel, shortDate } from '../viewmodels.js';
@@ -16,6 +16,7 @@ const chartLabel = computed(() => {
 });
 const rows = computed(() => PERSONS.map(p => {
   const s = stats.value[p];
+  const w = weekStreaks.value[p];
   return {
     p,
     top: [
@@ -27,6 +28,11 @@ const rows = computed(() => PERSONS.map(p => {
       { label: 'Longest run', value: s.longestRunKm > 0 ? formatKm(s.longestRunKm) : '–', unit: s.longestRunKm > 0 ? 'km' : '' },
       { label: 'Best pace', value: formatPace(s.bestPaceMinPerKm), unit: s.bestPaceMinPerKm ? '/km' : '' },
       { label: 'Streak', value: String(s.streakDays), unit: s.streakDays === 1 ? 'day' : 'days' }
+    ],
+    weekStreak: [
+      { label: 'Current', value: String(w.current), unit: w.current === 1 ? 'week' : 'weeks' },
+      { label: 'Best', value: String(w.best), unit: w.best === 1 ? 'week' : 'weeks' },
+      { label: 'This week', value: `${w.thisWeek.runs}/${w.target}`, unit: 'runs' }
     ]
   };
 }));
@@ -45,6 +51,13 @@ const rows = computed(() => PERSONS.map(p => {
         </div>
         <div class="stat-row stat-row--divided">
           <div v-for="s in r.bottom" :key="s.label" class="stat stat--sm">
+            <span class="stat__value">{{ s.value }}<span v-if="s.unit" class="stat__unit">{{ s.unit }}</span></span>
+            <span class="stat__label">{{ s.label }}</span>
+          </div>
+        </div>
+        <h3 class="text-eyebrow">Week streak ({{ weekStreaks[r.p].target }}+ runs)</h3>
+        <div class="stat-row stat-row--divided" role="group" :aria-label="`${store.names[r.p]} week streak`">
+          <div v-for="s in r.weekStreak" :key="s.label" class="stat stat--sm">
             <span class="stat__value">{{ s.value }}<span v-if="s.unit" class="stat__unit">{{ s.unit }}</span></span>
             <span class="stat__label">{{ s.label }}</span>
           </div>

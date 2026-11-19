@@ -14,6 +14,7 @@
 // Dates are local calendar dates 'YYYY-MM-DD'; all date maths goes through scoring.js (UTC based, DST safe).
 import { PLAN } from './plan.js';
 import { buildWeeks, weekOfEntry, weekForDate, addDays, daysBetween, formatKm } from './scoring.js';
+import { effectiveStartFor } from './planModel.js';
 
 /* ---------- tunable constants ---------- */
 
@@ -117,10 +118,12 @@ export function matchWeekRuns(planned, logged) {
 /* ---------- context: week, matches, recent load ---------- */
 
 function resolve(input) {
-  const { person, goals = {}, startDate } = input;
+  const { person, goals = {} } = input;
   const today = input.todayISO;
   const log = Array.isArray(input.log) ? input.log : [];
   const plan = input.plan || PLAN;
+  // The person's own plan start: passed in (recommendForPerson does), else from their plan state (planModel), never a global one.
+  const startDate = input.startDate || effectiveStartFor(person, input.planState, log, today);
   const weeks = input.weeks || buildWeeks(plan, goals, log, startDate, today);
   const weekN = weekForDate(startDate, today);
   const week = weekN >= 1 && weekN <= weeks.length ? weeks[weekN - 1] : null;
@@ -134,7 +137,7 @@ function resolve(input) {
       .sort((x, y) => (x.date || '').localeCompare(y.date || '') || (x.ts || 0) - (y.ts || 0) || String(x.id).localeCompare(String(y.id)));
     items = matchWeekRuns(planned, logged);
   }
-  return { ...input, plan, weeks, today, weekN, week, mine, items, log };
+  return { ...input, startDate, plan, weeks, today, weekN, week, mine, items, log };
 }
 
 // Recent load facts from the person's dated runs (imports without a date cannot be used).
@@ -186,8 +189,9 @@ function summarize(c) {
 
 /* ---------- public: the recommendation ---------- */
 
-// input: { weeks?, plan?, goals?, person: 'a'|'b', log, todayISO, startDate }
+// input: { weeks?, plan?, goals?, person: 'a'|'b', log, todayISO, startDate?, planState? }
 //   weeks = store.weeks (buildWeeks output); built from plan/goals/log when omitted.
+//   startDate = the person's plan start; derived from planState (planModel states) when omitted.
 // -> { kind: 'run'|'rest'|'done'|'ahead'|'not-started', run?, forDate?, reason, tags, alternatives:[{run, why}],
 //      plannedLeft, daysLeftInWeek, weekNumber, summary }
 //   kind 'run'          run to do today (forDate = today)

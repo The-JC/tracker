@@ -25,7 +25,7 @@ const rec = computed(() => {
   if (!store.me || !store.logLoaded) return null;
   // Same pipeline the daily reminder (Worker) uses, so the card and the push can never disagree.
   return recommendForPerson({
-    person: store.me, log: store.log, goals: store.goals, startDateSetting: store.settings.startDate, todayISO: today.value
+    person: store.me, log: store.log, goals: store.goals, startDateSetting: store.settings.startDate, planState: store.plans, todayISO: today.value
   }).rec;
 });
 

@@ -1,12 +1,12 @@
 <script setup>
-// Scoreboard: both people side by side (points, km, plan %, streak) + this-week head-to-head.
+// Scoreboard: both people side by side (points, km, plan %, day streak, week streak) + this-week head-to-head.
 // Props: none. Emits: none. Reads scoreboard, stats, weeks (store.js) and store.names. Person colours always come with the name.
 import { computed } from 'vue';
-import { store, scoreboard, stats, weeks } from '../store.js';
+import { store, scoreboard, stats, weeks, weekWindows, weekStreaks } from '../store.js';
 import { formatKm, formatPoints } from '../scoring.js';
-import { thisWeekSummary, PERSONS } from '../viewmodels.js';
+import { thisWeekSummary, weekStreakText, thisWeekRunsText, PERSONS } from '../viewmodels.js';
 
-const summary = computed(() => thisWeekSummary(weeks.value, stats.value));
+const summary = computed(() => thisWeekSummary(weeks.value, stats.value, weekWindows.value));
 const streakText = n => (n === 0 ? 'No streak yet' : n === 1 ? '1 day streak' : `${n} day streak`);
 const leadText = computed(() => {
   const s = summary.value;
@@ -27,6 +27,8 @@ const leadText = computed(() => {
         </div>
         <div class="compare__sub">{{ formatKm(scoreboard[p].km) }} km · {{ scoreboard[p].planPct }}% of plan</div>
         <div class="compare__sub">🔥 {{ streakText(scoreboard[p].streak) }}</div>
+        <div class="compare__sub"><span aria-hidden="true">🔥</span> <strong class="text-strong">{{ weekStreakText(weekStreaks[p].current) }}</strong></div>
+        <div class="compare__sub">{{ thisWeekRunsText(weekStreaks[p].thisWeek) }}<template v-if="weekStreaks[p].thisWeek.met && !weekStreaks[p].thisWeek.paused"><span aria-hidden="true"> ✓</span><span class="sr-only">, target met</span></template></div>
       </div>
     </div>
 

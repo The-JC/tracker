@@ -6,11 +6,11 @@
 // user-facing message on invalid input. Fields are validated up front with validateActivityInput so errors sit next to
 // the field; whatever addActivity still throws (offline, permissions...) is shown in a banner.
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate } from '../store.js';
+import { store, today, addActivity, updateActivity, loadPhoto, effectiveStartDate, planStates } from '../store.js';
 import {
-  validateActivityInput, defaultTitle, pointsFor, paceMinPerKm, formatPace, formatKm,
-  weekForDate, effectiveStartDate as calcStartDate, formatDateLong
+  validateActivityInput, defaultTitle, pointsFor, paceMinPerKm, formatPace, formatKm, formatDateLong
 } from '../scoring.js';
+import { effectiveStartFor, weekOfEntryFor } from '../planModel.js';
 import { SPORTS, RUN_TYPES, SPORT_BY_KEY, PLAN } from '../plan.js';
 import { compressImage } from '../utils/image.js';
 import { prepareEdit, formFromEntry, changeSport } from '../utils/entryPatch.js';
@@ -75,13 +75,13 @@ const weekInfo = computed(() => {
   // Undated imported entry: it keeps counting for its explicit plan week.
   if (isEdit.value && !iso && props.entry.week >= 1) return { n: props.entry.week, inPlan: props.entry.week <= PLAN.length };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
-  // A first dated run moves the effective plan start (see effectiveStartDate), so include it in the lookup
-  // (in edit mode without the entry itself, whose old date no longer counts).
+  // With the automatic plan start, a first dated run moves it (see planModel.effectiveStartFor), so include it in the lookup
+  // (in edit mode without the entry itself, whose old date no longer counts). The week is the signed-in person's own.
+  const me = store.me || 'a';
   const others = isEdit.value ? store.log.filter(e => e.id !== props.entry.id) : store.log;
-  const start = form.value.sport === 'run'
-    ? calcStartDate(store.settings.startDate, [...others, { sport: 'run', date: iso }], today.value)
-    : effectiveStartDate.value;
-  const n = weekForDate(start, iso);
+  const lookupLog = form.value.sport === 'run' ? [...others, { sport: 'run', date: iso }] : store.log;
+  const start = form.value.sport === 'run' ? effectiveStartFor(me, planStates.value, lookupLog, today.value) : effectiveStartDate.value;
+  const n = weekOfEntryFor(me, { date: iso }, planStates.value, lookupLog, today.value);
   // Without an explicit plan start, an earlier run than all existing ones moves week 1 back (so every week shifts).
   const movesStart = form.value.sport === 'run' && !store.settings.startDate && start < effectiveStartDate.value
     && others.some(e => e.sport === 'run' && e.date);

@@ -3,7 +3,7 @@
 // Props: none. Emits: none. Lazy-loaded by App.vue. Reads weeks, scoreboard, effectiveStartDate, store.*;
 // calls setGoal(runId, kmString) (debounced; '' resets to the plan default) and setStartDate(iso).
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { store, weeks, scoreboard, effectiveStartDate, setGoal, setStartDate } from '../store.js';
+import { store, weeks, scoreboard, effectiveStartDate, planStates, setGoal, setStartDate } from '../store.js';
 import { SPORT_BY_KEY, TOTAL_WEEKS } from '../plan.js';
 import { formatKm, formatPoints, pointsFor, relativeDate, formatDateLong } from '../scoring.js';
 import { PERSONS, fulfilledCount, tileStatus, tilePct, tileLabel, detailAnchor, shortDate } from '../viewmodels.js';
@@ -14,7 +14,7 @@ const STATUS_WORD = { fulfilled: 'fulfilled', current: 'current week', missed: '
 const headline = computed(() => Object.fromEntries(PERSONS.map(p => [p, { weeks: fulfilledCount(weeks.value, p), pct: scoreboard.value[p].planPct }])));
 
 /* ---- start-date banner ---- */
-const needsStart = computed(() => !store.settings.startDate && !store.log.some(e => e.sport === 'run' && e.date));
+const needsStart = computed(() => !store.settings.startDate && !(store.me && planStates.value[store.me].startDate) && !store.log.some(e => e.sport === 'run' && e.date));
 const startDraft = ref('');
 const startError = ref('');
 async function saveStart() {

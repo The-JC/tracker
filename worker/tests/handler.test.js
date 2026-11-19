@@ -34,7 +34,7 @@ function world({ events = {}, subs = {}, pushStatus = {}, names = {}, db = {} } 
       if (path[1] === 'events') return Response.json(events[path[2]] ?? null);
       if (path[1] === 'pushSubs') return Response.json(subs[path[2]] ?? null);
       if (path[1] === 'nameA' || path[1] === 'nameB') return Response.json(names[path[1]] ?? null);
-      if (['log', 'goals', 'settings'].includes(path[1])) return Response.json(db[path[1]] ?? null);
+      if (['log', 'goals', 'settings', 'plans'].includes(path[1])) return Response.json(db[path[1]] ?? null);
     }
     return new Response(null, { status: pushStatus[url] || 201 });
   };
@@ -249,8 +249,14 @@ test('test reminder: builds the caller own recommendation with the caller token 
   assert.deepEqual(json, { sent: 1, removed: 0, target: 'self', kind: 'run' });
   assert.deepEqual(pushes(w).map(c => c.url.href), [s.endpoint]);
   const dbPaths = w.calls.filter(c => c.url.host === 'db.example.test').map(c => c.url.pathname);
-  for (const p of ['log', 'goals', 'settings', 'nameA']) assert.ok(dbPaths.includes(`/trailhead-tracker-v1/${p}.json`), p);
+  for (const p of ['log', 'goals', 'settings', 'plans', 'nameA']) assert.ok(dbPaths.includes(`/trailhead-tracker-v1/${p}.json`), p);
   assert.ok(!dbPaths.some(p => p.includes('/events/') || p.includes('/pushSubs/b')), 'nothing about the other person');
+});
+
+test('test reminder: the caller\'s plans/<person> state drives the recommendation (own start date)', async () => {
+  const w = world({ subs: { a: { h1: sub() } }, db: { settings: { startDate: '2026-03-02' }, plans: { a: { startDate: '2026-03-09' } } } });
+  const { json } = await call(w, { token: tokenAt(T0), now: T0, body: { test: 'reminder' } });
+  assert.deepEqual(json, { sent: 1, removed: 0, target: 'self', kind: 'not-started', rest: true });
 });
 
 test('test reminder: non-run kind is still sent (Test: prefix is in the message) and reports the kind', async () => {

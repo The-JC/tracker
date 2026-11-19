@@ -82,10 +82,48 @@ P1 + pause/shift + per-person start date + race date + training days for reminde
 
 ### Week streak (definition)
 
-A **calendar week (Monday to Sunday) counts** for a person when they logged at least their **weekly target** of runs (`sport: 'run'`, km > 0) in it. The weekly target defaults to the number of non-optional runs in their plan weeks (usually 3) and is editable per person (`weeklyTarget` in their plan state).
+A **calendar week (Monday to Sunday) counts** for a person when they logged at least their **weekly target** of runs (`sport: 'run'`, km > 0) in it. The weekly target defaults to the number of non-optional runs in their plan weeks (usually 3) and is editable per person (`weeklyTarget` in their plan state). The target is **per week**: for a calendar week that maps to a plan week it is capped by the non-optional runs planned in that plan week (so the race week, with two, needs two); weeks outside the plan use the configured target.
 
 * **Streak** = number of consecutive counted weeks ending with the most recent *finished* week; the week in progress counts too once it is met, but never breaks the streak while it is still running.
 * **Paused weeks** (inside a pause range, or covered by a pause) are skipped: they neither count nor break the streak.
 * Weeks before the person's plan start are ignored. Also shown: the **best streak** ever.
 * It is calendar-based on purpose: in a rolling plan nothing is "missed", so a plan-week streak could never break.
 * The existing day streak (`streakDays`) stays as it is.
+
+## 8. Phase 1 API (implemented: per-person plan state, week streak)
+
+Phase 1 changes no behaviour for existing data: with no `plans` node every person gets the defaults (calendar mode, start = `settings/startDate`, else the automatic rule). Phases 2 and 3 code against the names below.
+
+### Database
+`trailhead-tracker-v1/plans/<a|b>` = `{ mode?, startDate?, raceDate?, pauses?, skipped?, trainingDays?, weeklyTarget? }` (only set fields exist; cleared fields are removed). Each person writes only their own node (store enforces it; the rules allow both, as for everything under the root). The Worker reads the whole `plans` node (one GET, failures are ignored = defaults). The legacy `settings/startDate` stays the fallback start of both people; phase 3 moves its UI to per person.
+
+### `src/planModel.js` (pure; app, Worker and node tests)
+| Export | Semantics |
+|---|---|
+| `DEFAULT_PLAN_STATE` | frozen `{ mode:'calendar', startDate:null, raceDate:null, pauses:[], skipped:[], trainingDays:[], weeklyTarget:null, fallbackStartDate:null }` |
+| `normalizePlanState(raw, { settingsStartDate })` | the `plans` node -> `{ a: PlanState, b: PlanState }`. Invalid fields dropped, never throws, idempotent. `startDate` = the person's OWN start only; `settingsStartDate` (valid ISO) is added as `fallbackStartDate` (never stored in the DB). `pauses`: `{from,to,note?}` valid, `from<=to`, sorted, overlapping merged (adjacent kept separate); `skipped`: unique non-empty strings; `trainingDays`: unique ints 0 (Sunday)..6, ascending; `weeklyTarget`: int 1..14 or null; `mode`: 'calendar' (default) or 'rolling' |
+| `normalizePersonState(raw, { settingsStartDate })` | the same for one person's node |
+| `validatePlanPatch(patch)` | strict check of user input: `{ ok:true, patch }` (provided fields only, normalised; `null` clears, arrays -> `[]`) or `{ ok:false, error }` (user-facing message) |
+| `effectiveStartFor(person, state, log, todayISO)` | own `startDate`, else `fallbackStartDate`, else automatic rule (Monday of the earliest dated run of the WHOLE log, else this Monday; identical to `scoring.effectiveStartDate`) |
+| `weekOfEntryFor(person, entry, state, log, todayISO)` | `scoring.weekOfEntry` with that person's start; `entry.week` override wins; may be <1 or >plan length |
+| `buildWeeksFor({ plan, goals, log, state, todayISO, viewer='a' })` | same shape as `scoring.buildWeeks`; `a` evaluated against a's start, `b` against b's (composes `buildWeeks` once per person). Top-level `n/kind/tag/current/startDate/endDate` follow `viewer`. With equal starts it is deep-equal to `buildWeeks` (golden tests) |
+| `weekWindowsFor({ plan, log, state, todayISO })` | `{ a:[{n,startDate,endDate,current,over}], b:[...] }`: each person's own calendar of the plan weeks |
+| `currentWeekIndexFor(windows, person)` | index of the current plan week or null |
+| `isPaused(state, dateISO, person?)`, `pausedDaysInWeek(state, mondayISO, person?)`, `weekIsPaused(state, mondayISO, person?)` | pause lookups. `state` may be `{a,b}` (then pass `person`) or one person's state. A week is paused when all 7 days are inside pauses |
+| `getPlanTemplate(id='default')` | the `PLAN` constant (database templates: phase 5) |
+| `defaultWeeklyTarget(plan, person?)`, `weeklyTargetFor(person, state, plan)` | mode of "runs with km > 0 per plan week" (3 here); `state.weeklyTarget` wins |
+| `weekStreak({ log, person, state, plan, todayISO })` | `{ current, best, thisWeek:{ runs, target, met, paused }, target }`, rules below |
+| `PERSONS`, `PLAN_MODES`, `PLAN_FIELDS`, limits (`MAX_PAUSES`...) | constants |
+
+All helpers accept `{a,b}` states, one person's state or the raw stored node (they normalise on the fly); `state` undefined = defaults.
+
+Week streak, as implemented (§7 plus): weeks are Monday-Sunday; the week containing the person's start is the first one; undated imports use `week` -> Monday of `start + (week-1)*7`; runs dated after today are ignored; a week fully inside pauses is skipped; a partly paused week counts when met and is skipped (not broken) when not met; the week in progress counts once met and never breaks. The target is per week: `min(weeklyTarget ?? default, non-optional planned runs of the plan week)` for a calendar week that maps to a plan week of the person (calendar mode only; plan week = the one containing the week's Thursday, first week clamped to the start; planned = goal km > 0 after `goals` overrides, minus `skipped` entries given as run id or `w<week>-<runType>`; 0 planned = configured target). Weeks outside the plan and rolling mode use the configured/default target. So exactly doing the plan (race week: 2 runs) never loses the streak. `weekStreak` takes an optional `goals`; top-level `target` is the configured/default one, `thisWeek.target` is the current week's.
+
+### Consumers (all go through planModel)
+* `recommendForPerson({ person, log, goals, startDateSetting, planState, todayISO })`: `planState` = the raw `plans` node or the app's `store.plans`; absent = old behaviour. Returned `weeks` have `person` as viewer. `recommendNext` accepts `planState` (and still `startDate`/`weeks`).
+* `entryPatch.weekFulfillment` / `newlyFulfilledWeek` accept `planState` (+ `settingsStartDate`).
+* Worker `recommendationFromDb` reads `plans` and passes it as `planState`.
+* Store: `store.plans`, `planStates`, `effectiveStartForPerson(person)`, `effectiveStartDate` (signed-in person), `weeks` (per-person), `weekWindows`, `weekStreaks`, `setPlanState(person, patch)`; see REBUILD_PLAN §6.
+* `viewmodels.thisWeekSummary(weeks, stats, windows?)` uses each person's own current plan week when `windows` is given; `weekStreakText`, `thisWeekRunsText`.
+
+Notes for phases 2 and 3: rolling mode is stored (`mode`) but nothing reads it yet. A person's weeks in `weeks[i].a/.b` are per person, the top-level date fields are not: read per-person dates from `weekWindows`. The Plan tab detail still shows the signed-in person's dates in its header.

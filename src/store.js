@@ -4,9 +4,11 @@
 import { reactive, computed, ref, watch } from 'vue';
 import { PLAN, PLAN_RUN_BY_ID } from './plan.js';
 import {
-  todayISO, isValidISODate, effectiveStartDate as calcStartDate, buildWeeks, scoreboard as calcScoreboard,
-  stats as calcStats, sortLog, validateActivityInput, weekOfEntry
+  todayISO, isValidISODate, scoreboard as calcScoreboard, stats as calcStats, sortLog, validateActivityInput
 } from './scoring.js';
+import {
+  normalizePlanState, validatePlanPatch, effectiveStartFor, buildWeeksFor, weekWindowsFor, weekStreak
+} from './planModel.js';
 import { migrateLegacy } from './migration.js';
 import {
   activityEventText, weekEventText, kudosEventText, noteEventText, unreadEvents, freshEvents, nextLastRead,
@@ -26,7 +28,7 @@ import { normalizeReminder, isValidTime, roundTime, deviceTimeZone, isValidTimeZ
 const DEFAULT_NAMES = { a: PEOPLE.a.name, b: PEOPLE.b.name };
 const P = {
   nameA: `${DB_ROOT}/nameA`, nameB: `${DB_ROOT}/nameB`, goals: `${DB_ROOT}/goals`, checks: `${DB_ROOT}/checks`,
-  activities: `${DB_ROOT}/activities`, settings: `${DB_ROOT}/settings`, reminders: `${DB_ROOT}/settings/reminders`, log: `${DB_ROOT}/log`,
+  activities: `${DB_ROOT}/activities`, settings: `${DB_ROOT}/settings`, reminders: `${DB_ROOT}/settings/reminders`, plans: `${DB_ROOT}/plans`, log: `${DB_ROOT}/log`,
   photos: `${DB_ROOT}/photos`, events: `${DB_ROOT}/events`, pushSubs: `${DB_ROOT}/pushSubs`, messages: MESSAGES_ROOT
 };
 const TOAST_MS = 5000;
@@ -55,6 +57,7 @@ export const store = reactive({
   names: { ...DEFAULT_NAMES },
   settings: { startDate: null },
   reminders: { a: normalizeReminder(), b: normalizeReminder() }, // settings/reminders/<a|b>: daily run reminder (the server writes lastSentDate)
+  plans: normalizePlanState(), // plans/<a|b>: per-person plan state as stored (planModel.normalizePlanState); see planStates for the effective one
   goals: {},
   log: [],
   logLoaded: false,     // true after the first `log` snapshot (feed skeleton vs. empty state)
@@ -77,8 +80,21 @@ export const store = reactive({
 export const today = ref(todayISO());
 const refreshToday = () => { today.value = todayISO(); };
 
-export const effectiveStartDate = computed(() => calcStartDate(store.settings.startDate, store.log, today.value));
-export const weeks = computed(() => buildWeeks(PLAN, store.goals, store.log, effectiveStartDate.value, today.value));
+// Per-person plan state with the legacy global settings/startDate filled in as each person's fallback start.
+export const planStates = computed(() => normalizePlanState(store.plans, { settingsStartDate: store.settings.startDate }));
+// Start of `person`'s plan (own plan start, else settings/startDate, else the automatic rule).
+export const effectiveStartForPerson = person => effectiveStartFor(person, planStates.value, store.log, today.value);
+// The signed-in person's start (kept for compatibility; person a's before sign-in).
+export const effectiveStartDate = computed(() => effectiveStartForPerson(store.me || 'a'));
+// Each person is evaluated against their own start; the top-level fields (current, startDate, endDate) follow the signed-in person.
+export const weeks = computed(() => buildWeeksFor({ plan: PLAN, goals: store.goals, log: store.log, state: planStates.value, todayISO: today.value, viewer: store.me || 'a' }));
+// { a: [{ n, startDate, endDate, current, over }], b: [...] }: the plan weeks' dates for each person's own start.
+export const weekWindows = computed(() => weekWindowsFor({ plan: PLAN, log: store.log, state: planStates.value, todayISO: today.value }));
+// { a, b } each { current, best, thisWeek: { runs, target, met, paused }, target } (planModel.weekStreak)
+export const weekStreaks = computed(() => ({
+  a: weekStreak({ log: store.log, person: 'a', state: planStates.value, plan: PLAN, goals: store.goals, todayISO: today.value }),
+  b: weekStreak({ log: store.log, person: 'b', state: planStates.value, plan: PLAN, goals: store.goals, todayISO: today.value })
+}));
 export const scoreboard = computed(() => calcScoreboard(store.log, weeks.value, today.value));
 export const stats = computed(() => calcStats(store.log, today.value));
 export const unreadCount = computed(() => unreadEvents(store.events, store.me, store.lastReadTs).length);
@@ -114,6 +130,7 @@ function startSync() {
     store.settings.startDate = s.startDate && isValidISODate(s.startDate) ? s.startDate : null;
     if (!s.migratedV1 && !migrationTried) { migrationTried = true; runMigration(); }
   });
+  sub(P.plans, v => { store.plans = normalizePlanState(v); });
   sub(P.reminders, v => {
     const r = v && typeof v === 'object' ? v : {};
     store.reminders = { a: normalizeReminder(r.a), b: normalizeReminder(r.b) };
@@ -141,6 +158,7 @@ function stopSync() {
   unsubs = [];
   store.log = []; store.logLoaded = false; store.syncError = ''; store.events = []; store.notes = []; store.goals = {};
   store.settings.startDate = null;
+  store.plans = normalizePlanState();
   store.reminders = { a: normalizeReminder(), b: normalizeReminder() };
   remindersLoaded = false;
   knownEventIds = null;
@@ -288,6 +306,24 @@ export async function setStartDate(iso) {
   await settle(iso ? backend.set(`${P.settings}/startDate`, iso) : backend.remove(`${P.settings}/startDate`));
 }
 
+// Per-person plan state (plans/<person>): `patch` may hold any of mode, startDate, raceDate, pauses, skipped, trainingDays,
+// weeklyTarget (null clears a field). Validated by planModel.validatePlanPatch (throws an Error with a user-facing message),
+// only the provided fields are merged, own plan only (person must be store.me). Optimistic and offline-safe (settle).
+// -> the person's new stored state. The legacy global settings/startDate stays the fallback start for both people.
+export async function setPlanState(person, patch) {
+  const p = validPerson(person);
+  if (!p || !backend) throw new Error('Unknown person.');
+  if (store.me !== p) throw new Error('You can only change your own plan.');
+  const checked = validatePlanPatch(patch);
+  if (!checked.ok) throw new Error(checked.error);
+  if (!Object.keys(checked.patch).length) return store.plans[p];
+  store.plans = { ...store.plans, [p]: normalizePlanState({ [p]: { ...store.plans[p], ...checked.patch } })[p] }; // optimistic, the snapshot confirms
+  // Cleared fields (null, empty list) are removed from the database; the defaults come back through normalisation.
+  const dbPatch = Object.fromEntries(Object.entries(checked.patch).map(([k, v]) => [k, v === null || (Array.isArray(v) && !v.length) ? null : v]));
+  await settle(backend.update(`${P.plans}/${p}`, clean(dbPatch)));
+  return store.plans[p];
+}
+
 // Daily run reminder (settings/reminders/<me>). Only enabled/time/tz/updatedTs are merged in (the Worker owns
 // lastSentDate), plus lastSentDate = today when an enabled time has already passed today in the person's zone, so
 // enabling at 21:00 for 20:00 does not fire at once. `time` is validated ('HH:MM') and rounded to 5 minutes;
@@ -368,7 +404,7 @@ export async function addActivity(input) {
 
   // Week fulfilment before/after, to detect a week that just became fulfilled.
   const isFulfilled = (log, e) => weekFulfillment({
-    entry: e, log, person: me, goals: store.goals, settingsStartDate: store.settings.startDate, today: today.value
+    entry: e, log, person: me, goals: store.goals, settingsStartDate: store.settings.startDate, planState: store.plans, today: today.value
   });
   const after = entry.sport === 'run' ? isFulfilled([...store.log, entry], entry) : { n: null, done: false };
   const before = entry.sport === 'run' && after.n ? isFulfilled(store.log, entry) : { done: false };
@@ -400,7 +436,7 @@ export async function updateActivity(id, input) {
   const me = store.me;
   const editedTs = Date.now();
   const weekN = newlyFulfilledWeek({
-    entry, next: prepared.next, log: store.log, goals: store.goals, settingsStartDate: store.settings.startDate, today: today.value
+    entry, next: prepared.next, log: store.log, goals: store.goals, settingsStartDate: store.settings.startDate, planState: store.plans, today: today.value
   });
 
   // Photo first, then the entry (so hasPhoto never points at a missing photo); issued back to back like addActivity.

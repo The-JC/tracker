@@ -2,9 +2,8 @@
 // validating it exactly like a new entry, and detecting that an edit made a plan week newly fulfilled.
 // Used by store.updateActivity and LogActivitySheet (edit mode); node-tested in tests/entryPatch.test.mjs.
 import { PLAN as DEFAULT_PLAN } from '../plan.js';
-import {
-  validateActivityInput, defaultTitle, buildWeeks, weekOfEntry, effectiveStartDate, isValidISODate
-} from '../scoring.js';
+import { validateActivityInput, defaultTitle, isValidISODate } from '../scoring.js';
+import { normalizePlanState, buildWeeksFor, weekOfEntryFor } from '../planModel.js';
 import { weekEventText } from '../notifications.js';
 
 // Fields a user may change. person, id, ts, kudos, imported are never part of a patch.
@@ -97,14 +96,15 @@ export function prepareEdit(entry, input, { today, now = new Date() } = {}) {
 
 /* ---------- plan week of an entry ---------- */
 
-// Plan week `entry` falls in, under the plan start implied by `log` (+ the settings start date), and whether that week is
-// fulfilled for `person`. `n` is null (never an out-of-range number) when the entry is outside plan weeks 1..plan.length,
-// e.g. a run dated before an explicit plan start date or after the race.
-export function weekFulfillment({ entry, log, person, goals = {}, settingsStartDate = null, today, plan = DEFAULT_PLAN }) {
-  const start = effectiveStartDate(settingsStartDate, log, today);
-  const n = weekOfEntry(entry, start);
+// Plan week `entry` falls in, under `person`'s plan start (their own plan state, else the settings start date, else implied by
+// `log`), and whether that week is fulfilled for `person`. `n` is null (never an out-of-range number) when the entry is outside
+// plan weeks 1..plan.length, e.g. a run dated before an explicit plan start date or after the race.
+// `planState` = the `plans` node ({ a, b }); absent = no per-person state (the settings start date applies to both).
+export function weekFulfillment({ entry, log, person, goals = {}, settingsStartDate = null, planState = null, today, plan = DEFAULT_PLAN }) {
+  const state = normalizePlanState(planState, { settingsStartDate });
+  const n = weekOfEntryFor(person, entry, state, log, today);
   if (!n || n < 1 || n > plan.length) return { n: null, done: false };
-  const week = buildWeeks(plan, goals, log, start, today)[n - 1];
+  const week = buildWeeksFor({ plan, goals, log, state, todayISO: today, viewer: person })[n - 1];
   return { n, done: !!week && week[person].status === 'fulfilled' };
 }
 
@@ -112,17 +112,17 @@ export function weekFulfillment({ entry, log, person, goals = {}, settingsStartD
 
 // Plan week (number) of `next.person` that is fulfilled with the edit applied but was not before it, else null.
 // Same before/after approach as addActivity. `log` is the current log (containing `entry`).
-export function newlyFulfilledWeek({ entry, next, log, goals = {}, settingsStartDate = null, today, plan = DEFAULT_PLAN }) {
+export function newlyFulfilledWeek({ entry, next, log, goals = {}, settingsStartDate = null, planState = null, today, plan = DEFAULT_PLAN }) {
   if (!entry || !next || next.sport !== 'run' || !(next.km > 0)) return null;
   const person = next.person;
+  const state = normalizePlanState(planState, { settingsStartDate });
   const afterLog = (log || []).map(e => (e.id === entry.id ? next : e));
-  const startAfter = effectiveStartDate(settingsStartDate, afterLog, today);
-  const n = weekOfEntry(next, startAfter);
+  const n = weekOfEntryFor(person, next, state, afterLog, today);
   if (!n || n < 1 || n > plan.length) return null;
-  const done = (l, start) => { const w = buildWeeks(plan, goals, l, start, today)[n - 1]; return !!w && w[person].status === 'fulfilled'; };
-  if (!done(afterLog, startAfter)) return null;
-  const startBefore = effectiveStartDate(settingsStartDate, log || [], today);
-  return done(log || [], startBefore) ? null : n;
+  // Each side maps weeks under the plan start that ITS log implies (an automatic start can move with the edit).
+  const done = l => { const w = buildWeeksFor({ plan, goals, log: l, state, todayISO: today, viewer: person })[n - 1]; return !!w && w[person].status === 'fulfilled'; };
+  if (!done(afterLog)) return null;
+  return done(log || []) ? null : n;
 }
 
 // Is there already a 'week' event from `person` for plan week `n`? (Events only store their text.)

@@ -124,8 +124,8 @@ const NOW = utc(2026, 3, 3, 6, 45);
 const TODAY = '2026-03-03';
 const TOKEN = 'sa-access-token';
 
-function world({ reminders, subs = {}, log = {}, settings = {}, goals = null, failPush = {}, pushStatus = {}, failDb = {} } = {}) {
-  const db = { settings: { startDate: '2026-03-02', ...settings, reminders }, log, goals, subs, nameA: 'Bea', nameB: 'Jules' };
+function world({ reminders, subs = {}, log = {}, settings = {}, goals = null, plans = null, failPush = {}, pushStatus = {}, failDb = {} } = {}) {
+  const db = { settings: { startDate: '2026-03-02', ...settings, reminders }, log, goals, plans, subs, nameA: 'Bea', nameB: 'Jules' };
   const calls = []; const lines = [];
   const fetchFn = async (url, init = {}) => {
     const u = new URL(url); const method = init.method || 'GET';
@@ -218,6 +218,21 @@ test('kind other than run: no push but the day is still claimed', async () => {
   assert.deepEqual(res, [{ person: 'a', status: 'skipped', why: 'not-started' }]);
   assert.equal(w.pushes().length, 0);
   assert.equal(w.db.settings.reminders.a.lastSentDate, TODAY);
+});
+
+test('plans/<person> is read: an own start date later than today means "plan not started" for that person only', async () => {
+  const plans = { a: { startDate: '2026-03-09' } }; // settings start 2026-03-02 would be week 1; a's own plan starts next week
+  const w = world({ reminders: { a: cfg(), b: cfg() }, subs: { a: { h: makeSub() }, b: { h: makeSub() } }, plans });
+  const res = await run(w);
+  assert.deepEqual(res, [{ person: 'a', status: 'skipped', why: 'not-started' }, { person: 'b', status: 'sent', sent: 1, removed: 0 }]);
+  assert.ok(w.calls.some(c => c.url.pathname === '/trailhead-tracker-v1/plans.json'), 'plans node was read');
+});
+
+test('an absent, junk or unreadable plans node behaves exactly like today (settings start date)', async () => {
+  for (const extra of [{ plans: null }, { plans: { a: 'junk', b: { startDate: 'not-a-date', mode: 5 } } }, { failDb: { plans: true } }]) {
+    const w = world({ reminders: { a: cfg() }, subs: { a: { h: makeSub() } }, ...extra });
+    assert.deepEqual(await run(w), [{ person: 'a', status: 'sent', sent: 1, removed: 0 }], JSON.stringify(extra));
+  }
 });
 
 test('rest recommendation (ran yesterday three days in a row) is skipped and claimed', async () => {

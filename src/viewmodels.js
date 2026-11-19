@@ -104,17 +104,31 @@ const round1 = v => Math.round(v * 10) / 10;
 /* ---------- this week head-to-head ---------- */
 
 // km logged this week per person (Monday-based series from stats) + the plan-week percent.
-// -> { week: Week|null, people: { a: { km, pct|null, planned }, b: {...} }, leader: 'a'|'b'|null, lead: number }
-export function thisWeekSummary(weeks, stats) {
+// `windows` (store.weekWindows, optional) makes each person's plan week their own when their starts differ; `n` is that week's number.
+// -> { week: Week|null, people: { a: { km, pct|null, planned, done, n|null }, b: {...} }, leader: 'a'|'b'|null, lead: number }
+export function thisWeekSummary(weeks, stats, windows) {
   const week = currentWeek(weeks);
   const people = {};
   for (const p of PERSONS) {
     const series = (stats && stats[p] && stats[p].weeklyKm) || [];
     const last = series.length ? series[series.length - 1].km : 0;
-    people[p] = { km: last, pct: week ? week[p].pct : null, planned: week ? week[p].plannedKm : 0, done: week ? week[p].doneKm : 0 };
+    const wk = windows ? ((weeks || []).find(w => (windows[p] || []).some(x => x.n === w.n && x.current)) || null) : week;
+    people[p] = { km: last, pct: wk ? wk[p].pct : null, planned: wk ? wk[p].plannedKm : 0, done: wk ? wk[p].doneKm : 0, n: wk ? wk.n : null };
   }
   const diff = Math.round((people.a.km - people.b.km) * 1000) / 1000;
   return { week, people, leader: diff > 0 ? 'a' : diff < 0 ? 'b' : null, lead: Math.abs(diff) };
+}
+
+/* ---------- week streak texts ---------- */
+
+// 'No week streak yet' | '1 week streak' | '4 week streak'
+export const weekStreakText = n => (!(n > 0) ? 'No week streak yet' : n === 1 ? '1 week streak' : `${n} week streak`);
+
+// planModel.weekStreak(...).thisWeek -> 'This week 2 of 3 runs' (or 'This week is paused').
+export function thisWeekRunsText(tw) {
+  if (!tw) return '';
+  if (tw.paused) return 'This week is paused';
+  return `This week ${tw.runs} of ${tw.target} ${tw.target === 1 ? 'run' : 'runs'}`;
 }
 
 /* ---------- notifications / toasts / notes ---------- */

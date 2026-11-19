@@ -68,17 +68,19 @@ const nameOf = (v, fallback) => {
 };
 export const DEFAULT_NAMES = { a: 'Beatrix', b: 'Julian' };
 
-// Reads log/goals/settings/name with `auth` and builds the person's recommendation for `todayISO`.
+// Reads log/goals/settings/plans/name with `auth` and builds the person's recommendation for `todayISO`.
+// `plans/<a|b>` is the per-person plan state (own start date, ...); an absent or unreadable node means today's behaviour.
 // -> { rec, name, loggedToday }
 export async function recommendationFromDb({ fetchFn, env, auth, person, todayISO, settings }) {
-  const [log, goals, st, name] = await Promise.all([
+  const [log, goals, st, planState, name] = await Promise.all([
     dbGet(fetchFn, env, `${DB_ROOT}/log`, auth),
     dbGet(fetchFn, env, `${DB_ROOT}/goals`, auth),
     settings ? Promise.resolve(settings) : dbGet(fetchFn, env, `${DB_ROOT}/settings`, auth),
+    dbGet(fetchFn, env, `${DB_ROOT}/plans`, auth).catch(() => null),
     dbGet(fetchFn, env, `${DB_ROOT}/name${person.toUpperCase()}`, auth).catch(() => null)
   ]);
   const startDateSetting = st && typeof st.startDate === 'string' ? st.startDate : null;
-  const { rec } = recommendForPerson({ person, log, goals, startDateSetting, todayISO });
+  const { rec } = recommendForPerson({ person, log, goals, startDateSetting, planState, todayISO });
   const entries = log && typeof log === 'object' ? Object.values(log) : [];
   const loggedToday = entries.some(e => e && e.person === person && e.date === todayISO);
   return { rec, name: nameOf(name, DEFAULT_NAMES[person]), loggedToday };
